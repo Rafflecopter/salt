@@ -318,7 +318,7 @@ def _get_image_infos(image):
         if infos:
             valid(
                 status,
-                id=infos['id'],
+                id=infos['Id'],
                 out=infos,
                 comment='found')
     except Exception:
