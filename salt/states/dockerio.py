@@ -246,7 +246,7 @@ def pulled(name, force=False, *args, **kwargs):
         return _valid(
             name=name,
             comment='Image already pulled: {0}'.format(name))
-    previous_id = iinfos['out']['id'] if iinfos['status'] else None
+    previous_id = iinfos['out']['Id'] if iinfos['status'] else None
     func = __salt('docker.pull')
     returned = func(name)
     if previous_id != returned['id']:
@@ -281,8 +281,8 @@ def built(name,
         return _valid(
             name=name,
             comment='Image already built: {0}, id: {1}'.format(
-                name, iinfos['out']['id']))
-    previous_id = iinfos['out']['id'] if iinfos['status'] else None
+                name, iinfos['out']['Id']))
+    previous_id = iinfos['out']['Id'] if iinfos['status'] else None
     func = __salt('docker.build')
     kw = dict(tag=name,
               path=path,
@@ -422,7 +422,7 @@ def absent(name):
     ins_container = __salt__['docker.inspect_container']
     cinfos = ins_container(name)
     if cinfos['status']:
-        cid = cinfos['id']
+        cid = cinfos['Id']
         is_running = __salt__['docker.is_running'](cid)
         # destroy if we found meat to do
         if is_running:
@@ -454,7 +454,7 @@ def present(name):
     ins_container = __salt('docker.inspect_container')
     cinfos = ins_container(name)
     if cinfos['status']:
-        cid = cinfos['id']
+        cid = cinfos['Id']
         return _valid(comment='Container {0} exists'.format(cid))
     else:
         return _invalid(comment='Container {0} not found'.format(cid or name))

@@ -348,7 +348,7 @@ def _get_container_infos(container):
         info = client.inspect_container(container)
         if info:
             valid(status,
-                  id=info['ID'],
+                  id=info['Id'],
                   out=info)
     except Exception:
         pass
@@ -421,7 +421,7 @@ def logs(container, *args, **kwargs):
     status = base_status.copy()
     client = _get_client()
     try:
-        info = client.logs(_get_container_infos(container)['id'])
+        info = client.logs(_get_container_infos(container)['Id'])
         valid(status, id=container, out=info)
     except Exception:
         invalid(status, id=container, out=traceback.format_exc())
@@ -461,7 +461,7 @@ def commit(container,
     status = base_status.copy()
     client = _get_client()
     try:
-        container = _get_container_infos(container)['id']
+        container = _get_container_infos(container)['Id']
         info = client.commit(
             container,
             repository=repository,
@@ -476,7 +476,7 @@ def commit(container,
                 id = info[k]
         if not found:
             raise Exception('Invalid commit return')
-        image = _get_image_infos(id)['id']
+        image = _get_image_infos(id)['Id']
         comment = 'Image {0} created from {1}'.format(image, container)
         valid(status, id=image, out=info, comment=comment)
     except Exception:
@@ -500,7 +500,7 @@ def diff(container, *args, **kwargs):
     status = base_status.copy()
     client = _get_client()
     try:
-        info = client.diff(_get_container_infos(container)['id'])
+        info = client.diff(_get_container_infos(container)['Id'])
         valid(status, id=container, out=info)
     except Exception:
         invalid(status, id=container, out=traceback.format_exc())
@@ -527,7 +527,7 @@ def export(container, path, *args, **kwargs):
         fic = open(ppath, 'w')
         status = base_status.copy()
         client = _get_client()
-        response = client.export(_get_container_infos(container)['id'])
+        response = client.export(_get_container_infos(container)['Id'])
         try:
             byte = response.read(4096)
             fic.write(byte)
@@ -716,7 +716,7 @@ def port(container, private_port, *args, **kwargs):
     client = _get_client()
     try:
         info = client.port(
-            _get_container_infos(container)['id'],
+            _get_container_infos(container)['Id'],
             port)
         valid(status, id=container, out=info)
     except Exception:
@@ -751,7 +751,7 @@ def stop(container, timeout=10, *args, **kwargs):
     client = _get_client()
     status = base_status.copy()
     try:
-        dcontainer = _get_container_infos(container)['id']
+        dcontainer = _get_container_infos(container)['Id']
         if is_running(dcontainer):
             client.stop(dcontainer, timeout=timeout)
             if not is_running(dcontainer):
@@ -799,7 +799,7 @@ def kill(container, *args, **kwargs):
     client = _get_client()
     status = base_status.copy()
     try:
-        dcontainer = _get_container_infos(container)['id']
+        dcontainer = _get_container_infos(container)['Id']
         if is_running(dcontainer):
             client.kill(dcontainer)
             if not is_running(dcontainer):
@@ -855,7 +855,7 @@ def restart(container, timeout=10, *args, **kwargs):
     client = _get_client()
     status = base_status.copy()
     try:
-        dcontainer = _get_container_infos(container)['id']
+        dcontainer = _get_container_infos(container)['Id']
         client.restart(dcontainer, timeout=timeout)
         if is_running(dcontainer):
             valid(status,
@@ -897,7 +897,7 @@ def start(container, binds=None, ports=None, port_bindings=None,
     client = _get_client()
     status = base_status.copy()
     try:
-        dcontainer = _get_container_infos(container)['id']
+        dcontainer = _get_container_infos(container)['Id']
         if not is_running(container):
             bindings = None
             if port_bindings is not None:
@@ -949,7 +949,7 @@ def wait(container, *args, **kwargs):
     client = _get_client()
     status = base_status.copy()
     try:
-        dcontainer = _get_container_infos(container)['id']
+        dcontainer = _get_container_infos(container)['Id']
         if is_running(dcontainer):
             client.wait(dcontainer)
             if not is_running(container):
@@ -1042,7 +1042,7 @@ def remove_container(container=None, force=False, v=False, *args, **kwargs):
     status['id'] = container
     dcontainer = None
     try:
-        dcontainer = _get_container_infos(container)['id']
+        dcontainer = _get_container_infos(container)['Id']
         if is_running(dcontainer):
             if not force:
                 invalid(status, id=container, out=None,
@@ -1092,7 +1092,7 @@ def top(container, *args, **kwargs):
     client = _get_client()
     status = base_status.copy()
     try:
-        dcontainer = _get_container_infos(container)['id']
+        dcontainer = _get_container_infos(container)['Id']
         if is_running(dcontainer):
             ret = client.top(dcontainer)
             if ret:
@@ -1256,8 +1256,8 @@ def import_image(src, repo, tag=None, *args, **kwargs):
             if status['status'] is not False:
                 infos = _get_image_infos(logs[0]['status'])
                 valid(status,
-                      comment='Image {0} was created'.format(infos['id']),
-                      id=infos['id'],
+                      comment='Image {0} was created'.format(infos['Id']),
+                      id=infos['Id'],
                       out=ret)
         else:
             invalid(status)
@@ -1291,7 +1291,7 @@ def tag(image, repository, tag=None, force=False, *args, **kwargs):
     client = _get_client()
     status = base_status.copy()
     try:
-        dimage = _get_image_infos(image)['id']
+        dimage = _get_image_infos(image)['Id']
         ret = client.tag(dimage, repository, tag=tag, force=force)
     except Exception:
         invalid(status,
@@ -1443,9 +1443,9 @@ def remove_image(image, *args, **kwargs):
     try:
         infos = _get_image_infos(image)
         if infos:
-            status['id'] = infos['id']
+            status['id'] = infos['Id']
             try:
-                client.remove_image(infos['id'])
+                client.remove_image(infos['Id'])
             except Exception:
                 invalid(status,
                         id=image,
@@ -1627,15 +1627,15 @@ def pull(repo, tag=None, *args, **kwargs):
         ret = client.pull(repo, tag=tag)
         if ret:
             logs, infos = _parse_image_multilogs_string(ret, repo)
-            if infos and infos.get('id', None):
+            if infos and infos.get('Id', None):
                 repotag = repo
                 if tag:
                     repotag = '{0}:{1}'.format(repo, tag)
                 valid(status,
                       out=logs if logs else ret,
-                      id=infos['id'],
+                      id=infos['Id'],
                       comment='Image {0} was pulled ({1})'.format(
-                          repotag, infos['id']))
+                          repotag, infos['Id']))
 
             else:
                 _pull_assemble_error_status(status, ret, logs)
@@ -1720,7 +1720,7 @@ def push(repo, *args, **kwargs):
             or ('Pushing tags for rev' in laststatus)
         ):
             status['status'] = True
-            status['id'] = _get_image_infos(repo)['id']
+            status['id'] = _get_image_infos(repo)['Id']
             status['comment'] = 'Image {0}({1}) was pushed'.format(
                 repo, status['id'])
             if logs:
@@ -1751,7 +1751,7 @@ def _run_wrapper(status, container, func, cmd, *args, **kwargs):
         command to execute in container
     '''
     try:
-        cid = _get_container_infos(container)['id']
+        cid = _get_container_infos(container)['Id']
         dcmd = 'lxc-attach -n {0} -- {1}'.format(cid, cmd)
         comment = 'Executed {0}'.format(dcmd)
         try:
@@ -1943,7 +1943,7 @@ def get_container_root(container):
     default_path = os.path.join(
         '/var/lib/docker',
         'containers',
-        _get_container_infos(container)['id'],
+        _get_container_infos(container)['Id'],
     )
     default_rootfs = os.path.join(default_path, 'roofs')
     rootfs_re = re.compile(r'^lxc.rootfs\s*=\s*(.*)\s*$', re.U)
