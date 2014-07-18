@@ -134,6 +134,9 @@ def create(vm_):
         'auth': NodeAuthPassword(get_password(vm_))
     }
 
+    if 'libcloud_args' in vm_:
+        kwargs.update(vm_['libcloud_args'])
+
     salt.utils.cloud.fire_event(
         'event',
         'requesting instance',
