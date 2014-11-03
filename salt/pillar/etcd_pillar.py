@@ -2,7 +2,7 @@
 '''
 Use etcd data as a Pillar source
 
-.. versionadded:: Helium
+.. versionadded:: 2014.7.0
 
 :depends:  - python-etcd
 
@@ -82,7 +82,9 @@ def __virtual__():
     return __virtualname__ if HAS_LIBS else False
 
 
-def ext_pillar(minion_id, pillar, conf):  # pylint: disable=W0613
+def ext_pillar(minion_id,
+               pillar,  # pylint: disable=W0613
+               conf):
     '''
     Check etcd for all data
     '''

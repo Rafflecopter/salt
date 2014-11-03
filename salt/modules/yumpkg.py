@@ -1,6 +1,16 @@
 # -*- coding: utf-8 -*-
 '''
 Support for YUM
+
+.. note::
+    This module makes heavy use of the **repoquery** utility, from the
+    yum-utils_ package. This package will be installed as a dependency if salt
+    is installed via EPEL. However, if salt has been installed using pip, or a
+    host is being managed using salt-ssh, then as of version 2014.7.0
+    yum-utils_ will be installed automatically to satisfy this dependency.
+
+    .. _yum-utils: http://yum.baseurl.org/wiki/YumUtils
+
 '''
 
 # Import python libs
@@ -8,6 +18,7 @@ import copy
 import logging
 import os
 import re
+from distutils.version import LooseVersion as _LooseVersion
 
 # Import salt libs
 import salt.utils
@@ -101,11 +112,28 @@ def _repoquery_pkginfo(repoquery_args):
     return ret
 
 
+def _check_repoquery():
+    '''
+    Check for existence of repoquery and install yum-utils if it is not
+    present.
+    '''
+    if not salt.utils.which('repoquery'):
+        __salt__['cmd.run'](
+            ['yum', '-y', 'install', 'yum-utils'],
+            python_shell=False,
+            output_loglevel='trace'
+        )
+        # Check again now that we've installed yum-utils
+        if not salt.utils.which('repoquery'):
+            raise CommandExecutionError('Unable to install yum-utils')
+
+
 def _repoquery(repoquery_args, query_format=__QUERYFORMAT):
     '''
     Runs a repoquery command and returns a list of namedtuples
     '''
-    cmd = 'repoquery --queryformat="{0}" {1}'.format(
+    _check_repoquery()
+    cmd = 'repoquery --plugins --queryformat="{0}" {1}'.format(
         query_format, repoquery_args
     )
     out = __salt__['cmd.run_stdout'](cmd, output_loglevel='trace')
@@ -185,7 +213,7 @@ def _rpm_pkginfo(name):
     Parses RPM metadata and returns a pkginfo namedtuple
     '''
     # REPOID is not a valid tag for the rpm command. Remove it and replace it
-    # witn "none"
+    # with "none"
     queryformat = __QUERYFORMAT.replace('%{REPOID}', 'none')
     output = __salt__['cmd.run_stdout'](
         'rpm -qp --queryformat {0!r} {1}'.format(queryformat, name),
@@ -244,7 +272,7 @@ def latest_version(*names, **kwargs):
     A specific repo can be requested using the ``fromrepo`` keyword argument,
     and the ``disableexcludes`` option is also supported.
 
-    .. versionadded:: Helium
+    .. versionadded:: 2014.7.0
         Support for the ``disableexcludes`` option
 
     CLI Example:
@@ -295,7 +323,7 @@ def latest_version(*names, **kwargs):
     repo_arg = _get_repo_options(**kwargs)
     exclude_arg = _get_excludes_option(**kwargs)
     updates = _repoquery_pkginfo(
-        '{0} {1} --pkgnarrow=available --plugins {2}'
+        '{0} {1} --pkgnarrow=available {2}'
         .format(repo_arg, exclude_arg, ' '.join(names))
     )
 
@@ -387,22 +415,41 @@ def list_pkgs(versions_as_list=False, **kwargs):
 def list_repo_pkgs(*args, **kwargs):
     '''
     .. versionadded:: 2014.1.0
+    .. versionchanged:: 2014.7.0
+        All available versions of each package are now returned. This required
+        a slight modification to the structure of the return dict. The return
+        data shown below reflects the updated return dict structure.
 
-    Returns all available packages. Optionally, package names can be passed and
-    the results will be filtered to packages matching those names. This can be
-    helpful in discovering the version or repo to specify in a pkg.installed
-    state. The return data is a dictionary of repo names, with each repo having
-    a list of dictionaries denoting the package name and version. An example of
-    the return data would look like this:
+    Returns all available packages. Optionally, package names (and name globs)
+    can be passed and the results will be filtered to packages matching those
+    names. This is recommended as it speeds up the function considerably.
+
+    This function can be helpful in discovering the version or repo to specify
+    in a :mod:`pkg.installed <salt.states.pkg.installed>` state.
+
+    The return data is a dictionary of repo names, with each repo containing a
+    dictionary in which the keys are package names, and the values are a list
+    of version numbers. Here is an example of the return data:
 
     .. code-block:: python
 
         {
-            '<repo_name>': [
-                {'<package1>': '<version1>'},
-                {'<package2>': '<version2>'},
-                {'<package3>': '<version3>'}
-            ]
+            'base': {
+                'bash': ['4.1.2-15.el6_4'],
+                'kernel': ['2.6.32-431.el6']
+            },
+            'updates': {
+                'bash': ['4.1.2-15.el6_5.2', '4.1.2-15.el6_5.1'],
+                'kernel': ['2.6.32-431.29.2.el6',
+                           '2.6.32-431.23.3.el6',
+                           '2.6.32-431.20.5.el6',
+                           '2.6.32-431.20.3.el6',
+                           '2.6.32-431.17.1.el6',
+                           '2.6.32-431.11.2.el6',
+                           '2.6.32-431.5.1.el6',
+                           '2.6.32-431.3.1.el6',
+                           '2.6.32-431.1.2.0.1.el6']
+            }
         }
 
     fromrepo : None
@@ -428,15 +475,22 @@ def list_repo_pkgs(*args, **kwargs):
 
     ret = {}
     for repo in repos:
-        repoquery_cmd = '--all --repoid="{0}" --plugins'.format(repo)
+        repoquery_cmd = '--all --repoid="{0}" --show-duplicates'.format(repo)
         for arg in args:
             repoquery_cmd += ' "{0}"'.format(arg)
         all_pkgs = _repoquery_pkginfo(repoquery_cmd)
         for pkg in all_pkgs:
-            ret.setdefault(pkg.repoid, []).append({pkg.name: pkg.version})
+            repo_dict = ret.setdefault(pkg.repoid, {})
+            version_list = repo_dict.setdefault(pkg.name, [])
+            version_list.append(pkg.version)
 
     for reponame in ret:
-        ret[reponame].sort()
+        for pkgname in ret[reponame]:
+            sorted_versions = sorted(
+                [_LooseVersion(x) for x in ret[reponame][pkgname]],
+                reverse=True
+            )
+            ret[reponame][pkgname] = [x.vstring for x in sorted_versions]
     return ret
 
 
@@ -448,7 +502,7 @@ def list_upgrades(refresh=True, **kwargs):
     supported, as used in pkg states, and the ``disableexcludes`` option is
     also supported.
 
-    .. versionadded:: Helium
+    .. versionadded:: 2014.7.0
         Support for the ``disableexcludes`` option
 
     CLI Example:
@@ -463,7 +517,7 @@ def list_upgrades(refresh=True, **kwargs):
     repo_arg = _get_repo_options(**kwargs)
     exclude_arg = _get_excludes_option(**kwargs)
     updates = _repoquery_pkginfo(
-        '{0} {1} --all --pkgnarrow=updates --plugins'.format(repo_arg, exclude_arg)
+        '{0} {1} --all --pkgnarrow=updates'.format(repo_arg, exclude_arg)
     )
     return dict([(x.name, x.version) for x in updates])
 
@@ -484,7 +538,7 @@ def check_db(*names, **kwargs):
     supported, as used in pkg states, and the ``disableexcludes`` option is
     also supported.
 
-    .. versionadded:: Helium
+    .. versionadded:: 2014.7.0
         Support for the ``disableexcludes`` option
 
     CLI Examples:
@@ -495,10 +549,11 @@ def check_db(*names, **kwargs):
         salt '*' pkg.check_db <package1> <package2> <package3> fromrepo=epel-testing
         salt '*' pkg.check_db <package1> <package2> <package3> disableexcludes=main
     '''
+    normalize = kwargs.pop('normalize') if kwargs.get('normalize') else False
     repo_arg = _get_repo_options(**kwargs)
     exclude_arg = _get_excludes_option(**kwargs)
     repoquery_base = \
-        '{0} {1} --all --quiet --whatprovides --plugins'.format(repo_arg, exclude_arg)
+        '{0} {1} --all --quiet --whatprovides'.format(repo_arg, exclude_arg)
 
     if 'pkg._avail' in __context__:
         avail = __context__['pkg._avail']
@@ -506,7 +561,7 @@ def check_db(*names, **kwargs):
         # get list of available packages
         avail = []
         lines = _repoquery(
-            '{0} --pkgnarrow=all --all --plugins'.format(repo_arg),
+            '{0} --pkgnarrow=all --all'.format(repo_arg),
             query_format='%{NAME}_|-%{ARCH}'
         )
         for line in lines:
@@ -514,7 +569,10 @@ def check_db(*names, **kwargs):
                 name, arch = line.split('_|-')
             except ValueError:
                 continue
-            avail.append(normalize_name('.'.join((name, arch))))
+            if normalize:
+                avail.append(normalize_name('.'.join((name, arch))))
+            else:
+                avail.append('.'.join((name, arch)))
         __context__['pkg._avail'] = avail
 
     ret = {}
@@ -678,6 +736,7 @@ def install(name=None,
             pkgs=None,
             sources=None,
             reinstall=False,
+            normalize=True,
             **kwargs):
     '''
     Install the passed package(s), add refresh=True to clean the yum database
@@ -714,7 +773,7 @@ def install(name=None,
         Works with sources when the package header of the source can be
         matched to the name and version of an installed package.
 
-        .. versionadded:: Helium
+        .. versionadded:: 2014.7.0
 
     skip_verify
         Skip the GPG verification check (e.g., ``--nogpgcheck``)
@@ -742,7 +801,7 @@ def install(name=None,
         Disable exclude from main, for a repo or for everything.
         (e.g., ``yum --disableexcludes='main'``)
 
-        .. versionadded:: Helium
+        .. versionadded:: 2014.7.0
 
 
     Multiple Package Installation Options:
@@ -771,6 +830,20 @@ def install(name=None,
 
             salt '*' pkg.install sources='[{"foo": "salt://foo.rpm"}, {"bar": "salt://bar.rpm"}]'
 
+    normalize
+        Normalize the package name by removing the architecture.  Default is True.
+        This is useful for poorly created packages which might include the
+        architecture as an actual part of the name such as kernel modules
+        which match a specific kernel version.
+
+        .. versionadded:: 2014.7.0
+
+    Example:
+
+    .. code-block:: bash
+
+        salt -G role:nsd pkg.install gpfs.gplbin-2.6.32-279.31.1.el6.x86_64 normalize=False
+
 
     Returns a dict containing the new package names and versions::
 
@@ -783,7 +856,7 @@ def install(name=None,
 
     try:
         pkg_params, pkg_type = __salt__['pkg_resource.parse_targets'](
-            name, pkgs, sources, **kwargs
+            name, pkgs, sources, normalize=normalize, **kwargs
         )
     except MinionError as exc:
         raise CommandExecutionError(exc)
@@ -905,7 +978,7 @@ def upgrade(refresh=True, fromrepo=None, skip_verify=False, **kwargs):
     '''
     Run a full system upgrade, a yum upgrade
 
-    .. versionchanged:: Helium
+    .. versionchanged:: 2014.7.0
 
     Return a dict containing the new package names and versions::
 
@@ -936,7 +1009,7 @@ def upgrade(refresh=True, fromrepo=None, skip_verify=False, **kwargs):
         Disable exclude from main, for a repo or for everything.
         (e.g., ``yum --disableexcludes='main'``)
 
-        .. versionadded:: Helium
+        .. versionadded:: 2014.7.0
     '''
     if salt.utils.is_true(refresh):
         refresh_db(**kwargs)
@@ -1040,7 +1113,7 @@ def purge(name=None, pkgs=None, **kwargs):  # pylint: disable=W0613
 
 def hold(name=None, pkgs=None, sources=None, **kwargs):  # pylint: disable=W0613
     '''
-    .. versionadded:: Helium
+    .. versionadded:: 2014.7.0
 
     Hold packages with ``yum -q versionlock``.
 
@@ -1133,7 +1206,7 @@ def hold(name=None, pkgs=None, sources=None, **kwargs):  # pylint: disable=W0613
 
 def unhold(name=None, pkgs=None, sources=None, **kwargs):  # pylint: disable=W0613
     '''
-    .. versionadded:: Helium
+    .. versionadded:: 2014.7.0
 
     Hold packages with ``yum -q versionlock``.
 
@@ -1343,7 +1416,7 @@ def group_info(name):
         'default packages': [],
         'description': ''
     }
-    cmd_template = 'repoquery --group --grouppkgs={0} --list {1!r}'
+    cmd_template = 'repoquery --plugins --group --grouppkgs={0} --list {1!r}'
 
     cmd = cmd_template.format('all', name)
     out = __salt__['cmd.run_stdout'](cmd, output_loglevel='trace')
@@ -1367,7 +1440,7 @@ def group_info(name):
     # considered to be conditional packages.
     ret['conditional packages'] = sorted(all_pkgs)
 
-    cmd = 'repoquery --group --info {0!r}'.format(name)
+    cmd = 'repoquery --plugins --group --info {0!r}'.format(name)
     out = __salt__['cmd.run_stdout'](cmd, output_loglevel='trace')
     if out:
         ret['description'] = '\n'.join(out.splitlines()[1:]).strip()
@@ -1446,12 +1519,12 @@ def get_repo(repo, basedir='/etc/yum.repos.d', **kwargs):  # pylint: disable=W06
     for arepo in repos.keys():
         if arepo == repo:
             repofile = repos[arepo]['file']
-    if not repofile:
-        raise Exception('repo {0} was not found in {1}'.format(repo, basedir))
 
-    # Return just one repo
-    filerepos = _parse_repo_file(repofile)[1]
-    return filerepos[repo]
+    if repofile:
+        # Return just one repo
+        filerepos = _parse_repo_file(repofile)[1]
+        return filerepos[repo]
+    return {}
 
 
 def del_repo(repo, basedir='/etc/yum.repos.d', **kwargs):  # pylint: disable=W0613
@@ -1669,8 +1742,13 @@ def _parse_repo_file(filename):
 
             # These are the actual configuration lines that matter
             if '=' in line:
-                comps = line.strip().split('=')
-                repos[repo][comps[0].strip()] = '='.join(comps[1:])
+                try:
+                    comps = line.strip().split('=')
+                    repos[repo][comps[0].strip()] = '='.join(comps[1:])
+                except KeyError:
+                    log.error('Failed to parse line in {0}, '
+                              'offending line was "{1}"'.format(filename,
+                                                                line.rstrip()))
 
     return (header, repos)
 
@@ -1727,7 +1805,7 @@ def expand_repo_def(repokwargs):
 
 def owner(*paths):
     '''
-    .. versionadded:: Helium
+    .. versionadded:: 2014.7.0
 
     Return the name of the package that owns the file. Multiple file paths can
     be passed. Like :mod:`pkg.version <salt.modules.yumpkg.version`, if a
@@ -1745,7 +1823,7 @@ def owner(*paths):
     if not paths:
         return ''
     ret = {}
-    cmd = 'rpm -qf --queryformat "%{NAME}" {0!r}'
+    cmd = 'rpm -qf --queryformat "%{{NAME}}" {0!r}'
     for path in paths:
         ret[path] = __salt__['cmd.run_stdout'](cmd.format(path),
                                                output_loglevel='trace')

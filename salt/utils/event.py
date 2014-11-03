@@ -258,30 +258,29 @@ class SaltEvent(object):
         data = serial.loads(mdata)
         return mtag, data
 
-    def get_event(self, wait=5, tag='', full=False, use_pending=False):
-        '''
-        Get a single publication.
-        IF no publication available THEN block for up to wait seconds
-        AND either return publication OR None IF no publication available.
+    def _check_pending(self, tag, pending_tags):
+        """Check the pending_events list for events that match the tag
 
-        IF wait is 0 then block forever.
-
-        use_pending
-            Defines whether to keep all unconsumed events in a pending_events
-            list, or to discard events that don't match the requested tag.  If
-            set to True, MAY CAUSE MEMORY LEAKS.
-        '''
-        self.subscribe()
-
-        if use_pending:
-            for evt in [x for x in self.pending_events
-                        if x['tag'].startswith(tag)]:
-                self.pending_events.remove(evt)
-                if full:
-                    return evt
+        :param tag: The tag to search for
+        :type tag: str
+        :param pending_tags: List of tags to preserve
+        :type pending_tags: list[str]
+        :return:
+        """
+        old_events = self.pending_events
+        self.pending_events = []
+        ret = None
+        for evt in old_events:
+            if evt['tag'].startswith(tag):
+                if ret is None:
+                    ret = evt
                 else:
-                    return evt['data']
+                    self.pending_events.append(evt)
+            elif any(evt['tag'].startswith(ptag) for ptag in pending_tags):
+                self.pending_events.append(evt)
+        return ret
 
+    def _get_event(self, wait, tag, pending_tags):
         start = time.time()
         timeout_at = start + wait
         while not wait or time.time() <= timeout_at:
@@ -291,7 +290,8 @@ class SaltEvent(object):
                 continue
 
             try:
-                ret = self.get_event_noblock()
+                ret = self.get_event_block()  # Please do not use non-blocking mode here.
+                                              # Reliability is more important than pure speed on the event bus.
             except zmq.ZMQError as ex:
                 if ex.errno == errno.EAGAIN or ex.errno == errno.EINTR:
                     continue
@@ -299,21 +299,68 @@ class SaltEvent(object):
                     raise
 
             if not ret['tag'].startswith(tag):  # tag not match
-                if use_pending:
+                if any(ret['tag'].startswith(ptag) for ptag in pending_tags):
                     self.pending_events.append(ret)
                 wait = timeout_at - time.time()
                 continue
 
             log.trace('get_event() received = {0}'.format(ret))
-            if full:
-                return ret
-            return ret['data']
+            return ret
+
         return None
+
+    def get_event(self, wait=5, tag='', full=False, use_pending=False, pending_tags=None):
+        '''
+        Get a single publication.
+        IF no publication available THEN block for up to wait seconds
+        AND either return publication OR None IF no publication available.
+
+        IF wait is 0 then block forever.
+
+        New in Boron always checks the list of pending events
+
+        use_pending
+            Defines whether to keep all unconsumed events in a pending_events
+            list, or to discard events that don't match the requested tag.  If
+            set to True, MAY CAUSE MEMORY LEAKS.
+
+        pending_tags
+            Add any events matching the listed tags to the pending queue.
+            Still MAY CAUSE MEMORY LEAKS but less likely than use_pending
+            assuming you later get_event for the tags you've listed here
+
+            New in Boron
+        '''
+        self.subscribe()
+
+        if pending_tags is None:
+            pending_tags = []
+        if use_pending:
+            pending_tags = ['']
+
+        ret = self._check_pending(tag, pending_tags)
+        if ret is None:
+            ret = self._get_event(wait, tag, pending_tags)
+
+        if ret is None or full:
+            return ret
+        else:
+            return ret['data']
 
     def get_event_noblock(self):
         '''Get the raw event without blocking or any other niceties
         '''
+        if not self.cpub:
+            self.connect_pub()
         raw = self.sub.recv(zmq.NOBLOCK)
+        mtag, data = self.unpack(raw, self.serial)
+        return {'data': data, 'tag': mtag}
+
+    def get_event_block(self):
+        '''Get the raw event in a blocking fashion
+           Slower, but decreases the possibility of dropped events
+        '''
+        raw = self.sub.recv()
         mtag, data = self.unpack(raw, self.serial)
         return {'data': data, 'tag': mtag}
 
@@ -444,7 +491,6 @@ class MasterEvent(SaltEvent):
     '''
     def __init__(self, sock_dir):
         super(MasterEvent, self).__init__('master', sock_dir)
-        self.connect_pub()
 
 
 class LocalClientEvent(MasterEvent):
@@ -539,12 +585,20 @@ class Reactor(multiprocessing.Process, salt.state.Compiler):
         salt.state.Compiler.__init__(self, opts)
         self.wrap = ReactWrap(self.opts)
 
+        local_minion_opts = self.opts.copy()
+        local_minion_opts['file_client'] = 'local'
+        self.minion = salt.minion.MasterMinion(local_minion_opts)
+
     def render_reaction(self, glob_ref, tag, data):
         '''
         Execute the render system against a single reaction file and return
         the data structure
         '''
         react = {}
+
+        if glob_ref.startswith('salt://'):
+            glob_ref = self.minion.functions['cp.cache_file'](glob_ref)
+
         for fn_ in glob.glob(glob_ref):
             try:
                 react.update(self.render_template(
@@ -661,7 +715,7 @@ class ReactWrap(object):
             return False
         return ret
 
-    def cmd(self, *args, **kwargs):
+    def local(self, *args, **kwargs):
         '''
         Wrap LocalClient for running :ref:`execution modules <all-salt.modules>`
         '''
@@ -669,13 +723,15 @@ class ReactWrap(object):
             self.client_cache['local'] = salt.client.LocalClient(self.opts['conf_file'])
         return self.client_cache['local'].cmd_async(*args, **kwargs)
 
+    cmd = local
+
     def runner(self, fun, **kwargs):
         '''
         Wrap RunnerClient for executing :ref:`runner modules <all-salt.runners>`
         '''
         if 'runner' not in self.client_cache:
             self.client_cache['runner'] = salt.runner.RunnerClient(self.opts)
-        return self.client_cache['runner'].async(fun, kwargs)
+        return self.client_cache['runner'].async(fun, kwargs, fire_event=False)
 
     def wheel(self, fun, **kwargs):
         '''
@@ -683,7 +739,7 @@ class ReactWrap(object):
         '''
         if 'wheel' not in self.client_cache:
             self.client_cache['wheel'] = salt.wheel.Wheel(self.opts)
-        return self.client_cache['wheel'].call_func(fun, **kwargs)
+        return self.client_cache['wheel'].async(fun, kwargs, fire_event=False)
 
 
 class StateFire(object):

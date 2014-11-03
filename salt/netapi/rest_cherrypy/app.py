@@ -3,7 +3,7 @@
 A REST API for Salt
 ===================
 
-.. versionadded:: Helium
+.. versionadded:: 2014.7.0
 
 .. py:currentmodule:: salt.netapi.rest_cherrypy.app
 
@@ -31,7 +31,7 @@ A REST API for Salt
 
     .. code-block:: bash
 
-        % salt-call tls.create_self_signed_cert
+        salt-call tls.create_self_signed_cert
 
     All available configuration options are detailed below. These settings
     configure the CherryPy HTTP server and do not apply when using an external
@@ -64,6 +64,9 @@ A REST API for Salt
         The number of worker threads to start up in the pool.
     socket_queue_size : ``30``
         Specify the maximum number of HTTP connections to queue.
+    expire_responses : True
+        Whether to check for and kill HTTP responses that have exceeded the
+        default timeout.
     max_request_body_size : ``1048576``
         Maximum size for the HTTP request body.
     collect_stats : False
@@ -191,6 +194,8 @@ import itertools
 import functools
 import logging
 import json
+import StringIO
+import tarfile
 import time
 from multiprocessing import Process, Pipe
 
@@ -402,6 +407,8 @@ def urlencoded_processor(entity):
 
     For example::
 
+    .. code-block:: bash
+
         curl -si localhost:8000 -d client=local -d tgt='*' \\
                 -d fun='test.kwarg' -d arg='one=1' -d arg='two=2'
 
@@ -506,8 +513,10 @@ def lowdata_fmt():
 
     data = cherrypy.request.unserialized_data
 
-    if (cherrypy.request.headers['Content-Type']
-            == 'application/x-www-form-urlencoded'):
+    # if the data was sent as urlencoded, we need to make it a list.
+    # this is a very forgiving implementation as different clients set different
+    # headers for form encoded data (including charset or something similar)
+    if not isinstance(data, list):
         # Make the 'arg' param a list if not already
         if 'arg' in data and not isinstance(data['arg'], list):
             data['arg'] = [data['arg']]
@@ -613,9 +622,11 @@ class LowDataAdapter(object):
             :status 401: |401|
             :status 406: |406|
 
-        **Example request**::
+        **Example request:**
 
-            % curl -i localhost:8000
+        .. code-block:: bash
+
+            curl -i localhost:8000
 
         .. code-block:: http
 
@@ -623,7 +634,7 @@ class LowDataAdapter(object):
             Host: localhost:8000
             Accept: application/json
 
-        **Example response**:
+        **Example response:**
 
         .. code-block:: http
 
@@ -663,9 +674,11 @@ class LowDataAdapter(object):
             :term:`lowstate` data describing Salt commands must be sent in the
             request body.
 
-        **Example request**::
+        **Example request:**
 
-            % curl -si https://localhost:8000 \\
+        .. code-block:: bash
+
+            curl -si https://localhost:8000 \\
                     -H "Accept: application/x-yaml" \\
                     -H "X-Auth-Token: d40d1e1e" \\
                     -d client=local \\
@@ -684,7 +697,7 @@ class LowDataAdapter(object):
 
             fun=test.ping&arg&client=local&tgt=*
 
-        **Example response**:
+        **Example response:**
 
         .. code-block:: http
 
@@ -729,9 +742,11 @@ class Minions(LowDataAdapter):
             :status 401: |401|
             :status 406: |406|
 
-        **Example request**::
+        **Example request:**
 
-            % curl -i localhost:8000/minions/ms-3
+        .. code-block:: bash
+
+            curl -i localhost:8000/minions/ms-3
 
         .. code-block:: http
 
@@ -739,7 +754,7 @@ class Minions(LowDataAdapter):
             Host: localhost:8000
             Accept: application/x-yaml
 
-        **Example response**:
+        **Example response:**
 
         .. code-block:: http
 
@@ -780,9 +795,11 @@ class Minions(LowDataAdapter):
             request body. The ``client`` option will be set to
             :py:meth:`~salt.client.LocalClient.local_async`.
 
-        **Example request**::
+        **Example request:**
 
-            % curl -sSi localhost:8000/minions \\
+        .. code-block:: bash
+
+            curl -sSi localhost:8000/minions \\
                 -H "Accept: application/x-yaml" \\
                 -d tgt='*' \\
                 -d fun='status.diskusage'
@@ -797,7 +814,7 @@ class Minions(LowDataAdapter):
 
             tgt=*&fun=status.diskusage
 
-        **Example response**:
+        **Example response:**
 
         .. code-block:: http
 
@@ -844,9 +861,11 @@ class Jobs(LowDataAdapter):
             :status 401: |401|
             :status 406: |406|
 
-        **Example request**::
+        **Example request:**
 
-            % curl -i localhost:8000/jobs
+        .. code-block:: bash
+
+            curl -i localhost:8000/jobs
 
         .. code-block:: http
 
@@ -854,7 +873,7 @@ class Jobs(LowDataAdapter):
             Host: localhost:8000
             Accept: application/x-yaml
 
-        **Example response**:
+        **Example response:**
 
         .. code-block:: http
 
@@ -871,9 +890,11 @@ class Jobs(LowDataAdapter):
                 Target: jerry
                 Target-type: glob
 
-        **Example request**::
+        **Example request:**
 
-            % curl -i localhost:8000/jobs/20121130104633606931
+        .. code-block:: bash
+
+            curl -i localhost:8000/jobs/20121130104633606931
 
         .. code-block:: http
 
@@ -881,7 +902,7 @@ class Jobs(LowDataAdapter):
             Host: localhost:8000
             Accept: application/x-yaml
 
-        **Example response**:
+        **Example response:**
 
         .. code-block:: http
 
@@ -936,6 +957,195 @@ class Jobs(LowDataAdapter):
         return ret
 
 
+class Keys(LowDataAdapter):
+    def GET(self, mid=None):
+        '''
+        A convenience URL for showing the list of minion keys or detail on a
+        specific key
+
+        .. http:get:: /keys/(mid)
+
+            List all keys or show a specific key
+
+            :status 200: |200|
+            :status 401: |401|
+            :status 406: |406|
+
+        **Example request:**
+
+        .. code-block:: bash
+
+            curl -i localhost:8000/keys
+
+        .. code-block:: http
+
+            GET /keys HTTP/1.1
+            Host: localhost:8000
+            Accept: application/x-yaml
+
+        **Example response:**
+
+        .. code-block:: http
+
+            HTTP/1.1 200 OK
+            Content-Length: 165
+            Content-Type: application/x-yaml
+
+            return:
+              local:
+              - master.pem
+              - master.pub
+              minions:
+              - jerry
+              minions_pre: []
+              minions_rejected: []
+
+        **Example request:**
+
+        .. code-block:: bash
+
+            curl -i localhost:8000/keys/jerry
+
+        .. code-block:: http
+
+            GET /keys/jerry HTTP/1.1
+            Host: localhost:8000
+            Accept: application/x-yaml
+
+        **Example response:**
+
+        .. code-block:: http
+
+            HTTP/1.1 200 OK
+            Content-Length: 73
+            Content-Type: application/x-yaml
+
+            return:
+              minions:
+                jerry: 51:93:b3:d0:9f:3a:6d:e5:28:67:c2:4b:27:d6:cd:2b
+        '''
+        self._cp_config['tools.salt_token.on'] = True
+
+        if mid:
+            lowstate = [{
+                'client': 'wheel',
+                'fun': 'key.finger',
+                'match': mid,
+            }]
+        else:
+            lowstate = [{
+                'client': 'wheel',
+                'fun': 'key.list_all',
+            }]
+
+        cherrypy.request.lowstate = lowstate
+        result = self.exec_lowstate(token=cherrypy.session.get('token'))
+
+        return {'return': next(result, {}).get('data', {}).get('return', {})}
+
+    def POST(self, mid, keysize=None, force=None, **kwargs):
+        r'''
+        Easily generate keys for a minion and auto-accept the new key
+
+        Example partial kickstart script to bootstrap a new minion:
+
+        .. code-block:: text
+
+            %post
+            mkdir -p /etc/salt/pki/minion
+            curl -sS http://localhost:8000/keys \
+                    -d mid=jerry \
+                    -d username=kickstart \
+                    -d password=kickstart \
+                    -d eauth=pam \
+                | tar -C /etc/salt/pki/minion -xf -
+
+            mkdir -p /etc/salt/minion.d
+            printf 'master: 10.0.0.5\nid: jerry' > /etc/salt/minion.d/id.conf
+            %end
+
+        .. http:post:: /keys
+
+            Generate a public and private key and return both as a tarball
+
+            Authentication credentials must be passed in the request.
+
+            :status 200: |200|
+            :status 401: |401|
+            :status 406: |406|
+
+        **Example request:**
+
+        .. code-block:: bash
+
+            curl -sS http://localhost:8000/keys \
+                    -d mid=jerry \
+                    -d username=kickstart \
+                    -d password=kickstart \
+                    -d eauth=pam \
+                    -o jerry-salt-keys.tar
+
+        .. code-block:: http
+
+            POST /keys HTTP/1.1
+            Host: localhost:8000
+
+        **Example response:**
+
+        .. code-block:: http
+
+            HTTP/1.1 200 OK
+            Content-Length: 10240
+            Content-Disposition: attachment; filename="saltkeys-jerry.tar"
+            Content-Type: application/x-tar
+
+            jerry.pub0000644000000000000000000000070300000000000010730 0ustar  00000000000000
+        '''
+        self._cp_config['tools.hypermedia_out.on'] = False
+        self._cp_config['tools.sessions.on'] = False
+
+        lowstate = [{
+            'client': 'wheel',
+            'fun': 'key.gen_accept',
+            'id_': mid,
+        }]
+
+        if keysize:
+            lowstate[0]['keysize'] = keysize
+
+        if force:
+            lowstate[0]['force'] = force
+
+        lowstate[0].update(kwargs)
+
+        cherrypy.request.lowstate = lowstate
+        result = self.exec_lowstate()
+        ret = next(result, {}).get('data', {}).get('return', {})
+
+        pub_key = ret.get('pub', '')
+        pub_key_file = tarfile.TarInfo('minion.pub')
+        pub_key_file.size = len(pub_key)
+
+        priv_key = ret.get('priv', '')
+        priv_key_file = tarfile.TarInfo('minion.pem')
+        priv_key_file.size = len(priv_key)
+
+        fileobj = StringIO.StringIO()
+        tarball = tarfile.open(fileobj=fileobj, mode='w')
+        tarball.addfile(pub_key_file, StringIO.StringIO(pub_key))
+        tarball.addfile(priv_key_file, StringIO.StringIO(priv_key))
+        tarball.close()
+
+        headers = cherrypy.response.headers
+        headers['Content-Disposition'] = 'attachment; filename="saltkeys-{0}.tar"'.format(mid)
+        headers['Content-Type'] = 'application/x-tar'
+        headers['Content-Length'] = fileobj.len
+        headers['Cache-Control'] = 'no-cache'
+
+        fileobj.seek(0)
+        return fileobj
+
+
 class Login(LowDataAdapter):
     '''
     Log in to receive a session token
@@ -960,9 +1170,11 @@ class Login(LowDataAdapter):
             :status 401: |401|
             :status 406: |406|
 
-        **Example request**::
+        **Example request:**
 
-            % curl -i localhost:8000/login
+        .. code-block:: bash
+
+            curl -i localhost:8000/login
 
         .. code-block:: http
 
@@ -970,7 +1182,7 @@ class Login(LowDataAdapter):
             Host: localhost:8000
             Accept: text/html
 
-        **Example response**:
+        **Example response:**
 
         .. code-block:: http
 
@@ -1002,9 +1214,11 @@ class Login(LowDataAdapter):
             :status 401: |401|
             :status 406: |406|
 
-        **Example request**::
+        **Example request:**
 
-            % curl -si localhost:8000/login \\
+        .. code-block:: bash
+
+            curl -si localhost:8000/login \\
                     -H "Accept: application/json" \\
                     -d username='saltuser' \\
                     -d password='saltpass' \\
@@ -1020,7 +1234,7 @@ class Login(LowDataAdapter):
 
             username=saltuser&password=saltpass&eauth=pam
 
-        **Example response**:
+        **Example response:**
 
         .. code-block:: http
 
@@ -1090,6 +1304,8 @@ class Logout(LowDataAdapter):
     _cp_config = dict(LowDataAdapter._cp_config, **{
         'tools.salt_token.on': True,
         'tools.salt_auth.on': True,
+
+        'tools.lowdata_fmt.on': False,
     })
 
     def POST(self):
@@ -1128,9 +1344,11 @@ class Run(LowDataAdapter):
             :status 401: |401|
             :status 406: |406|
 
-        **Example request**::
+        **Example request:**
 
-            % curl -sS localhost:8000/run \\
+        .. code-block:: bash
+
+            curl -sS localhost:8000/run \\
                 -H 'Accept: application/x-yaml' \\
                 -d client='local' \\
                 -d tgt='*' \\
@@ -1149,7 +1367,7 @@ class Run(LowDataAdapter):
 
             client=local&tgt=*&fun=test.ping&username=saltdev&password=saltdev&eauth=pam
 
-        **Example response**:
+        **Example response:**
 
         .. code-block:: http
 
@@ -1211,16 +1429,18 @@ class Events(object):
             :status 401: |401|
             :status 406: |406|
 
-        **Example request**::
+        **Example request:**
 
-            % curl -NsS localhost:8000/events
+        .. code-block:: bash
+
+            curl -NsS localhost:8000/events
 
         .. code-block:: http
 
             GET /events HTTP/1.1
             Host: localhost:8000
 
-        **Example response**:
+        **Example response:**
 
         .. code-block:: http
 
@@ -1252,9 +1472,11 @@ class Events(object):
 
     Some browser clients lack CORS support for the ``EventSource()`` API. Such
     clients may instead pass the :mailheader:`X-Auth-Token` value as an URL
-    parameter::
+    parameter:
 
-        % curl -NsS localhost:8000/events/6d1b722e
+    .. code-block:: bash
+
+        curl -NsS localhost:8000/events/6d1b722e
 
     It is also possible to consume the stream via the shell.
 
@@ -1269,7 +1491,7 @@ class Events(object):
 
     .. code-block:: bash
 
-        % curl -NsS localhost:8000/events |\
+        curl -NsS localhost:8000/events |\
                 while IFS= read -r line ; do
                     echo $line
                 done
@@ -1278,7 +1500,7 @@ class Events(object):
 
     .. code-block:: bash
 
-        % curl -NsS localhost:8000/events |\
+        curl -NsS localhost:8000/events |\
                 awk '
                     BEGIN { RS=""; FS="\\n" }
                     $1 ~ /^tag: salt\/job\/[0-9]+\/new$/ { print $0 }
@@ -1368,7 +1590,9 @@ class WebsocketEndpoint(object):
             :query format_events: The event stream will undergo server-side
                 formatting if the ``format_events`` URL parameter is included
                 in the request. This can be useful to avoid formatting on the
-                client-side::
+                client-side:
+
+                .. code-block:: bash
 
                     curl -NsS <...snip...> localhost:8000/ws?format_events
 
@@ -1379,7 +1603,7 @@ class WebsocketEndpoint(object):
             :status 401: |401|
             :status 406: |406|
 
-        **Example request**::
+        **Example request:**
 
             curl -NsS \\
                 -H 'X-Auth-Token: ffedf49d' \\
@@ -1414,9 +1638,11 @@ class WebsocketEndpoint(object):
 
         An authentication token **may optionally** be passed as part of the URL
         for browsers that cannot be configured to send the authentication
-        header or cookie::
+        header or cookie:
 
-                curl -NsS <...snip...> localhost:8000/ws/ffedf49d
+        .. code-block:: bash
+
+            curl -NsS <...snip...> localhost:8000/ws/ffedf49d
 
         The event stream can be easily consumed via JavaScript:
 
@@ -1588,9 +1814,11 @@ class Webhook(object):
             :status 406: |406|
             :status 413: request body is too large
 
-        **Example request**::
+        **Example request:**
 
-            % curl -sS localhost:8000/hook -d foo='Foo!' -d bar='Bar!'
+        .. code-block:: bash
+
+            curl -sS localhost:8000/hook -d foo='Foo!' -d bar='Bar!'
 
         .. code-block:: http
 
@@ -1737,6 +1965,7 @@ class API(object):
         'minions': Minions,
         'run': Run,
         'jobs': Jobs,
+        'keys': Keys,
         'events': Events,
         'stats': Stats,
     }
@@ -1788,6 +2017,8 @@ class API(object):
                 'server.socket_port': self.apiopts.get('port', 8000),
                 'server.thread_pool': self.apiopts.get('thread_pool', 100),
                 'server.socket_queue_size': self.apiopts.get('queue_size', 30),
+                'engine.timeout_monitor.on': self.apiopts.get(
+                    'expire_responses', True),
                 'max_request_body_size': self.apiopts.get(
                     'max_request_body_size', 1048576),
                 'debug': self.apiopts.get('debug', False),

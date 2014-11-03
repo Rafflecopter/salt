@@ -128,6 +128,9 @@ def send(func, *args, **kwargs):
             # Safe error, arg may be in kwargs
             pass
     f_call = salt.utils.format_call(__salt__[func], func_data)
+    for arg in args:
+        if arg not in f_call['args']:
+            f_call['args'].append(arg)
     try:
         if 'kwargs' in f_call:
             data[func] = __salt__[func](*f_call['args'], **f_call['kwargs'])
@@ -170,7 +173,6 @@ def get(tgt, fun, expr_form='glob'):
         pcre
         grain
         grain_pcre
-        compound
 
     CLI Example:
 
@@ -180,8 +182,8 @@ def get(tgt, fun, expr_form='glob'):
         salt '*' mine.get 'os:Fedora' network.interfaces grain
         salt '*' mine.get 'os:Fedora and S@192.168.5.0/24' network.ipaddrs compound
     '''
-    if expr_form.lower == 'pillar':
-        log.error('Pillar matching not supported on mine.get')
+    if expr_form.lower() in ('pillar', 'compound'):
+        log.error('Pillar/compound matching not supported on mine.get')
         return ''
     if __opts__['file_client'] == 'local':
         ret = {}
@@ -190,7 +192,6 @@ def get(tgt, fun, expr_form='glob'):
                      'list': __salt__['match.list'],
                      'grain': __salt__['match.grain'],
                      'grain_pcre': __salt__['match.grain_pcre'],
-                     'compound': __salt__['match.compound'],
                      'ipcidr': __salt__['match.ipcidr'],
                      }[expr_form](tgt)
         if is_target:

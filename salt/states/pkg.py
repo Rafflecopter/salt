@@ -42,7 +42,7 @@ import re
 import salt.utils
 from salt.output import nested
 from salt.utils import namespaced_function as _namespaced_function
-from salt.utils.odict import OrderedDict
+from salt.utils.odict import OrderedDict as _OrderedDict
 from salt._compat import string_types
 from salt.exceptions import (
     CommandExecutionError, MinionError, SaltInvocationError
@@ -123,6 +123,7 @@ def _find_install_targets(name=None,
                           sources=None,
                           skip_suggestions=False,
                           pkg_verify=False,
+                          normalize=True,
                           **kwargs):
     '''
     Inspect the arguments to pkg.installed and discover what packages need to
@@ -139,7 +140,7 @@ def _find_install_targets(name=None,
     # Get the ignore_types list if any from the pkg_verify argument
     if type(pkg_verify) is list and any(x.get('ignore_types') is not None
                                         for x in pkg_verify
-                                        if type(x) is OrderedDict
+                                        if type(x) is _OrderedDict
                                         and 'ignore_types' in x):
         ignore_types = next(x.get('ignore_types')
                             for x in pkg_verify
@@ -174,8 +175,13 @@ def _find_install_targets(name=None,
                                    'repository.'.format(name)}
             if version is None:
                 version = _get_latest_pkg_version(pkginfo)
-        _normalize_name = __salt__.get('pkg.normalize_name', lambda pkgname: pkgname)
-        desired = {_normalize_name(name): version}
+
+        if normalize:
+            _normalize_name = __salt__.get('pkg.normalize_name', lambda pkgname: pkgname)
+            desired = {_normalize_name(name): version}
+        else:
+            desired = {name: version}
+
         to_unpurge = _find_unpurge_targets(desired)
 
         cver = cur_pkgs.get(name, [])
@@ -389,9 +395,10 @@ def installed(
         sources=None,
         allow_updates=False,
         pkg_verify=False,
+        normalize=True,
         **kwargs):
     '''
-    Verify that the package is installed, and that it is the correct version
+    Ensure that the package is installed, and that it is the correct version
     (if specified).
 
     name
@@ -514,14 +521,14 @@ def installed(
         Force the package to be held at the current installed version.
         Currently works with YUM & APT based systems.
 
-        .. versionadded:: Helium
+        .. versionadded:: 2014.7.0
 
     allow_updates
         Allow the package to be updated outside Salt's control (e.g. auto updates on Windows).
         This means a package on the Minion can have a newer version than the latest available
         in the repository without enforcing a re-installation of the package.
 
-        .. versionadded:: Helium
+        .. versionadded:: 2014.7.0
 
     Example:
 
@@ -537,7 +544,7 @@ def installed(
             - hold: False
 
     pkg_verify
-        .. versionadded:: Helium
+        .. versionadded:: 2014.7.0
 
         For requested packages that are already installed and would not be targeted for
         upgrade or downgrade, use pkg.verify to determine if any of the files installed
@@ -566,7 +573,24 @@ def installed(
             - pkg_verify:
               - ignore_types: [config,doc]
 
-    Multiple Package Installation Options: (not supported in Windows or pkgng)
+    normalize
+        Normalize the package name by removing the architecture.  Default is True.
+        This is useful for poorly created packages which might include the
+        architecture as an actual part of the name such as kernel modules
+        which match a specific kernel version.
+
+        .. versionadded:: 2014.7.0
+
+    Example:
+
+    .. code-block:: yaml
+
+        gpfs.gplbin-2.6.32-279.31.1.el6.x86_64:
+          pkg.installed:
+            - normalize: False
+
+    **Multiple Package Installation Options: (not supported in Windows or
+    pkgng)**
 
     pkgs
         A list of packages to install from a software repository. All packages
@@ -683,6 +707,7 @@ def installed(
                                    fromrepo=fromrepo,
                                    skip_suggestions=skip_suggestions,
                                    pkg_verify=pkg_verify,
+                                   normalize=normalize,
                                    **kwargs)
 
     try:
@@ -706,7 +731,7 @@ def installed(
                     return {'name': name,
                             'changes': {},
                             'result': False,
-                            'comment': exc.message}
+                            'comment': str(exc)}
 
                 if 'result' in hold_ret and not hold_ret['result']:
                     return {'name': name,
@@ -802,6 +827,7 @@ def installed(
                                             pkgs=pkgs,
                                             sources=sources,
                                             reinstall=reinstall,
+                                            normalize=normalize,
                                             **kwargs)
 
             if os.path.isfile(rtag) and refresh:
@@ -830,7 +856,7 @@ def installed(
                             name=name, pkgs=pkgs, sources=sources
                         )
                 except (CommandExecutionError, SaltInvocationError) as exc:
-                    comment.append(exc.message)
+                    comment.append(str(exc))
                     return {'name': name,
                             'changes': changes,
                             'result': False,
@@ -905,7 +931,7 @@ def installed(
                 changes[change_name]['old'] += '\n'
             changes[change_name]['old'] += '{0}'.format(i['changes']['old'])
 
-    # Any requested packages that were not targetted for install or reinstall
+    # Any requested packages that were not targeted for install or reinstall
     if not_modified:
         if sources:
             summary = ', '.join(not_modified)
@@ -948,7 +974,7 @@ def installed(
     # Get the ignore_types list if any from the pkg_verify argument
     if type(pkg_verify) is list and any(x.get('ignore_types') is not None
                                         for x in pkg_verify
-                                        if type(x) is OrderedDict
+                                        if type(x) is _OrderedDict
                                         and 'ignore_types' in x):
         ignore_types = next(x.get('ignore_types')
                             for x in pkg_verify
@@ -1006,8 +1032,8 @@ def latest(
         pkgs=None,
         **kwargs):
     '''
-    Verify that the named package is installed and the latest available
-    package. If the package can be updated this state function will update
+    Ensure that the named package is installed and the latest available
+    package. If the package can be updated, this state function will update
     the package. Generally it is better for the
     :mod:`installed <salt.states.pkg.installed>` function to be
     used, as :mod:`latest <salt.states.pkg.latest>` will update the package
@@ -1351,7 +1377,7 @@ def purged(name, pkgs=None, **kwargs):
 
 def uptodate(name, refresh=False):
     '''
-    .. versionadded:: Helium
+    .. versionadded:: 2014.7.0
 
     Verify that the system is completely up to date.
 

@@ -35,6 +35,14 @@ def merge_aggregate(obj_a, obj_b):
     return merge_recursive(obj_a, obj_b, level=1)
 
 
+def merge_overwrite(obj_a, obj_b):
+    for obj in obj_b:
+        if obj in obj_a.keys():
+            obj_a[obj] = obj_b[obj]
+            return obj_a
+    return merge_recurse(obj_a, obj_b)
+
+
 def get_pillar(opts, grains, id_, saltenv=None, ext=None, env=None):
     '''
     Return the correct pillar driver based on the file_client option
@@ -105,7 +113,7 @@ class Pillar(object):
         self.actual_file_roots = opts['file_roots']
         # use the local file client
         self.opts = self.__gen_opts(opts, grains, id_, saltenv, ext)
-        self.client = salt.fileclient.get_file_client(self.opts)
+        self.client = salt.fileclient.get_file_client(self.opts, True)
 
         if opts.get('file_client', '') == 'local':
             opts['grains'] = grains
@@ -272,8 +280,8 @@ class Pillar(object):
         '''
         Cleanly merge the top files
         '''
-        top = collections.defaultdict(dict)
-        orders = collections.defaultdict(dict)
+        top = collections.defaultdict(OrderedDict)
+        orders = collections.defaultdict(OrderedDict)
         for ctops in tops.values():
             for ctop in ctops:
                 for saltenv, targets in ctop.items():
@@ -378,13 +386,13 @@ class Pillar(object):
         state = None
         try:
             state = compile_template(
-                fn_, self.rend, self.opts['renderer'], saltenv, sls, **defaults)
+                fn_, self.rend, self.opts['renderer'], saltenv, sls, _pillar_rend=True, **defaults)
         except Exception as exc:
             msg = 'Rendering SLS {0!r} failed, render error:\n{1}'.format(
                 sls, exc
             )
             log.critical(msg)
-            errors.append(msg)
+            errors.append('Rendering SLS \'{0}\' failed. Please see master log for details.'.format(sls))
         mods.add(sls)
         nstate = None
         if state:
@@ -514,7 +522,7 @@ class Pillar(object):
                                                          pillar_dirs,
                                                          key)
                     except TypeError as exc:
-                        if exc.message.startswith('ext_pillar() takes exactly '):
+                        if str(exc).startswith('ext_pillar() takes exactly '):
                             log.warning('Deprecation warning: ext_pillar "{0}"'
                                         ' needs to accept minion_id as first'
                                         ' argument'.format(key))
@@ -552,6 +560,8 @@ class Pillar(object):
         elif strategy == 'aggregate':
             #: level = 1 merge at least root data
             merged = merge_aggregate(obj_a, obj_b)
+        elif strategy == 'overwrite':
+            merged = merge_overwrite(obj_a, obj_b)
         else:
             log.warning('unknown merging strategy {0}, '
                         'fallback to recurse'.format(strategy))

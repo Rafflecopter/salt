@@ -360,8 +360,7 @@ def check_path_traversal(path, user='root', skip_perm_errors=False):
                 if user != current_user:
                     msg += ' Try running as user {0}.'.format(user)
                 else:
-                    msg += ' Please give {0} read permissions.'.format(user,
-                                                                       tpath)
+                    msg += ' Please give {0} read permissions.'.format(user)
 
             # We don't need to bail on config file permission errors
             # if the CLI
@@ -462,3 +461,24 @@ def valid_id(opts, id_):
         return bool(clean_path(opts['pki_dir'], id_))
     except (AttributeError, KeyError) as e:
         return False
+
+
+def safe_py_code(code):
+    '''
+    Check a string to see if it has any potentially unsafe routines which
+    could be executed via python, this routine is used to improve the
+    safety of modules suct as virtualenv
+    '''
+    bads = (
+            'import',
+            ';',
+            'subprocess',
+            'eval',
+            'open',
+            'file',
+            'exec',
+            'input')
+    for bad in bads:
+        if code.count(bad):
+            return False
+    return True

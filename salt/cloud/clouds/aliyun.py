@@ -3,7 +3,7 @@
 AliYun ECS Cloud Module
 ==========================
 
-.. versionadded:: Helium
+.. versionadded:: 2014.7.0
 
 The Aliyun cloud module is used to control access to the aliyun ECS.
 http://www.aliyun.com/
@@ -41,7 +41,7 @@ from hashlib import sha1
 # Import salt cloud libs
 import salt.utils.cloud
 import salt.config as config
-from salt.cloud.exceptions import (
+from salt.exceptions import (
     SaltCloudNotFound,
     SaltCloudSystemExit,
     SaltCloudExecutionFailure,
@@ -586,10 +586,10 @@ def create(vm_):
             'The following exception was thrown when trying to '
             'run the initial deployment: {1}'.format(
                 vm_['name'],
-                exc.message
+                str(exc)
             ),
             # Show the traceback if the debug logging level is enabled
-            exc_info=log.isEnabledFor(logging.DEBUG)
+            exc_info_on_loglevel=logging.DEBUG
         )
         return False
 
@@ -617,13 +617,13 @@ def create(vm_):
         except SaltCloudSystemExit:
             pass
         finally:
-            raise SaltCloudSystemExit(exc.message)
+            raise SaltCloudSystemExit(str(exc))
 
     public_ip = data['PublicIpAddress'][0]
     log.debug('VM {0} is now running'.format(public_ip))
     vm_['ssh_host'] = public_ip
 
-    # The instance is booted and accessable, let's Salt it!
+    # The instance is booted and accessible, let's Salt it!
     ret = salt.utils.cloud.bootstrap(vm_, __opts__)
     ret.update(data.__dict__)
 

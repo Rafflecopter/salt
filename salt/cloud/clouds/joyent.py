@@ -57,7 +57,7 @@ import salt.utils.cloud
 import salt.config as config
 from salt.utils import namespaced_function
 from salt.utils.cloud import is_public_ip
-from salt.cloud.exceptions import (
+from salt.exceptions import (
     SaltCloudSystemExit,
     SaltCloudExecutionFailure,
     SaltCloudExecutionTimeout
@@ -217,7 +217,7 @@ def create(vm_):
                 vm_['name'], str(exc)
             ),
             # Show the traceback if the debug logging level is enabled
-            exc_info=log.isEnabledFor(logging.DEBUG)
+            exc_info_on_loglevel=logging.DEBUG
         )
         return False
 
@@ -265,7 +265,7 @@ def create(vm_):
             except SaltCloudSystemExit:
                 pass
             finally:
-                raise SaltCloudSystemExit(exc.message)
+                raise SaltCloudSystemExit(str(exc))
 
     data = reformat_node(data)
 
@@ -577,7 +577,7 @@ def take_action(name=None, call=None, command=None, data=None, method='GET',
             log.error(
                 'Failed to invoke {0} node {1}: {2}'.format(caller, name, exc),
                 # Show the traceback if the debug logging level is enabled
-                exc_info=log.isEnabledFor(logging.DEBUG)
+                exc_info_on_loglevel=logging.DEBUG
             )
             ret = [100, {}]
 

@@ -77,7 +77,7 @@ def present(name,
     ret = {'name': name,
            'changes': {},
            'result': True,
-           'comment': 'Extention {0} is already present'.format(name)}
+           'comment': 'Extension {0} is already present'.format(name)}
     db_args = {
         'maintenance_db': maintenance_db,
         'runas': user,
@@ -115,7 +115,7 @@ def present(name,
         return ret
     cret = None
     if toinstall or toupgrade:
-        cret = __salt__['postgres.create_extension'.format(mode)](
+        cret = __salt__['postgres.create_extension'](
             name=name,
             if_not_exists=if_not_exists,
             schema=schema,

@@ -17,12 +17,18 @@ def condition_input(args, kwargs):
     '''
     Return a single arg structure for the publisher to safely use
     '''
+    ret = []
+    for arg in args:
+        if isinstance(arg, long):
+            ret.append(str(arg))
+        else:
+            ret.append(arg)
     if isinstance(kwargs, dict) and kwargs:
         kw_ = {'__kwarg__': True}
         for key, val in kwargs.iteritems():
             kw_[key] = val
-        return list(args) + [kw_]
-    return args
+        return ret + [kw_]
+    return ret
 
 
 def parse_input(args, condition=True):
@@ -35,7 +41,7 @@ def parse_input(args, condition=True):
     _args = []
     _kwargs = {}
     for arg in args:
-        if isinstance(arg, string_types) and r'\n' not in arg:
+        if isinstance(arg, string_types) and r'\n' not in arg and '\n' not in arg:
             arg_name, arg_value = parse_kwarg(arg)
             if arg_name:
                 _kwargs[arg_name] = yamlify_arg(arg_value)
@@ -87,6 +93,9 @@ def yamlify_arg(arg):
         # True
         # >>> yaml.load('      ') is None
         # True
+        return arg
+
+    elif '_' in arg and all([x in '0123456789_' for x in arg.strip()]):
         return arg
 
     try:

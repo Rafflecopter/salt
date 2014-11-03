@@ -2,9 +2,9 @@
 Mod Aggregate State Runtime Modifications
 =========================================
 
-.. versionadded:: Helium
+.. versionadded:: 2014.7.0
 
-The mod_aggregate system was added in the Helium release of Salt and allows for
+The mod_aggregate system was added in the 2014.7.0 release of Salt and allows for
 runtime modification of the executing state data. Simply put, it allows for the
 data used by Salt's state system to be changed on the fly at runtime, kind of
 like a configuration management JIT compiler or a runtime import system. All in
@@ -28,8 +28,9 @@ How to Use it
 
 .. note::
 
-    Since this option changes the basic behavior of the state runtime states
-    should be executed in 
+    Since this option changes the basic behavior of the state runtime, after
+    it is enabled states should be executed using `test=True` to ensure that
+    the desired behavior is preserved.
 
 Since this behavior can dramatically change the flow of configuration
 management inside of Salt it is disabled by default. But enabling it is easy.

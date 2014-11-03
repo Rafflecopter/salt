@@ -44,13 +44,17 @@ base url to use for accessing S3.
 This pillar can operate in two modes, single environment per bucket or multiple
 environments per bucket.
 
-Single environment mode must have this bucket structure::
+Single environment mode must have this bucket structure:
 
-s3://<bucket name>/<files>
+.. code-block:: text
 
-Multiple environment mode must have this bucket structure::
+    s3://<bucket name>/<files>
 
-s3://<bucket name>/<environment>/<files>
+Multiple environment mode must have this bucket structure:
+
+.. code-block:: text
+
+    s3://<bucket name>/<environment>/<files>
 
 '''
 
@@ -58,7 +62,6 @@ s3://<bucket name>/<environment>/<files>
 import logging
 import os
 import time
-import hashlib
 import pickle
 import urllib
 from copy import deepcopy
@@ -84,8 +87,15 @@ class S3Credentials(object):
         self.verify_ssl = verify_ssl
 
 
-def ext_pillar(minion_id, pillar, bucket, key, keyid, verify_ssl,
-               multiple_env=False, environment='base', service_url=None):
+def ext_pillar(minion_id,
+               pillar,  # pylint: disable=W0613
+               bucket,
+               key,
+               keyid,
+               verify_ssl,
+               multiple_env=False,
+               environment='base',
+               service_url=None):
     '''
     Execute a command and read the output as YAML
     '''
@@ -193,7 +203,7 @@ def _refresh_buckets_cache_file(creds, cache_file, multiple_env, environment):
     '''
 
     # helper s3 query function
-    def __get_s3_meta(bucket):
+    def __get_s3_meta():
         return s3.query(
             key=creds.key,
             keyid=creds.keyid,
@@ -207,10 +217,10 @@ def _refresh_buckets_cache_file(creds, cache_file, multiple_env, environment):
         return filter(lambda k: 'Key' in k, s3_meta)
 
     # pull out the environment dirs (e.g. the root dirs)
-    def __get_pillar_environments_from_s3_meta(s3_meta):
-        environments = map(lambda k: (os.path.dirname(k['Key'])
-                           .split('/', 1))[0], files)
-
+    def __get_pillar_environments(files):
+        environments = map(
+            lambda k: (os.path.dirname(k['Key']).split('/', 1))[0], files
+        )
         return set(environments)
 
     log.debug('Refreshing S3 buckets pillar cache file')
@@ -223,7 +233,7 @@ def _refresh_buckets_cache_file(creds, cache_file, multiple_env, environment):
         log.debug('Single environment per bucket mode')
 
         bucket_files = {}
-        s3_meta = __get_s3_meta(bucket)
+        s3_meta = __get_s3_meta()
 
         # s3 query returned something
         if s3_meta:
@@ -234,12 +244,12 @@ def _refresh_buckets_cache_file(creds, cache_file, multiple_env, environment):
     else:
         # Multiple environments per buckets
         log.debug('Multiple environment per bucket mode')
-        s3_meta = __get_s3_meta(bucket)
+        s3_meta = __get_s3_meta()
 
         # s3 query returned data
         if s3_meta:
             files = __get_pillar_files_from_s3_meta(s3_meta)
-            environments = __get_pillar_environments_from_s3_meta(s3_meta)
+            environments = __get_pillar_environments(files)
 
             # pull out the files for the environment
             for saltenv in environments:
@@ -279,7 +289,7 @@ def _read_buckets_cache_file(cache_file):
     return data
 
 
-def _find_files(metadata, dirs_only=False):
+def _find_files(metadata):
     '''
     Looks for all the files in the S3 bucket cache metadata
     '''
@@ -292,8 +302,8 @@ def _find_files(metadata, dirs_only=False):
 
         # grab the paths from the metadata
         filePaths = map(lambda k: k['Key'], data)
-        # filter out the files or the dirs depending on flag
-        ret[bucket] += filter(lambda k: k.endswith('/') == dirs_only,
+        # filter out the dirs
+        ret[bucket] += filter(lambda k: not k.endswith('/'),
                               filePaths)
 
     return ret
@@ -326,12 +336,10 @@ def _get_file_from_s3(creds, metadata, saltenv, bucket, path,
         file_md5 = filter(str.isalnum, file_meta['ETag']) \
             if file_meta else None
 
-        cached_file_hash = hashlib.md5()
-        with salt.utils.fopen(cached_file_path, 'rb') as fp_:
-            cached_file_hash.update(fp_.read())
+        cached_md5 = salt.utils.get_hash(cached_file_path, 'md5')
 
         # hashes match we have a cache hit
-        if cached_file_hash.hexdigest() == file_md5:
+        if cached_md5 == file_md5:
             return
 
     # ... or get the file from S3

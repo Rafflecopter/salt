@@ -43,7 +43,9 @@ LIBCLOUD_FUNCS_NOT_SUPPORTED = (
     'saltify.avail_sizes',
     'saltify.avail_images',
     'saltify.avail_locations',
-    'rackspace.reboot'
+    'rackspace.reboot',
+    'openstack.list_locations',
+    'rackspace.list_locations'
 )
 
 
@@ -291,10 +293,12 @@ def log_handlers(opts):
     return load.filter_func('setup_handlers')
 
 
-def ssh_wrapper(opts, functions=None):
+def ssh_wrapper(opts, functions=None, context=None):
     '''
     Returns the custom logging handler modules
     '''
+    if context is None:
+        context = {}
     if functions is None:
         functions = {}
     load = _create_loader(
@@ -305,8 +309,10 @@ def ssh_wrapper(opts, functions=None):
             'client',
             'ssh'))
     )
-    pack = {'name': '__salt__',
-            'value': functions}
+    pack = [{'name': '__salt__',
+             'value': functions},
+            {'name': '__context__',
+             'value': context}]
     return load.gen_functions(pack)
 
 
@@ -1035,6 +1041,8 @@ class Loader(object):
                     log.warning(msg)
                 else:
                     virtual = mod.__virtual__()
+                # Get the module's virtual name
+                virtualname = getattr(mod, '__virtualname__', virtual)
                 if not virtual:
                     # if __virtual__() evaluates to False then the module
                     # wasn't meant for this platform or it's not supposed to
@@ -1093,9 +1101,6 @@ class Loader(object):
                             )
                         )
 
-                    # Get the module's virtual name
-                    virtualname = getattr(mod, '__virtualname__', virtual)
-
                     if virtualname != virtual:
                         # The __virtualname__ attribute does not match what's
                         # being returned by the __virtual__() function. This
@@ -1112,6 +1117,11 @@ class Loader(object):
                         )
 
                     module_name = virtualname
+
+                # If the __virtual__ function returns True and __virtualname__ is set then use it
+                elif virtual is True and virtualname != module_name:
+                    if virtualname is not True:
+                        module_name = virtualname
 
         except KeyError:
             # Key errors come out of the virtual function when passing
@@ -1206,7 +1216,14 @@ class Loader(object):
         grains_data = {}
         funcs = self.gen_functions()
         for key, fun in funcs.items():
-            if key[key.index('.') + 1:] == 'core':
+            if not key.startswith('core.'):
+                continue
+            ret = fun()
+            if not isinstance(ret, dict):
+                continue
+            grains_data.update(ret)
+        for key, fun in funcs.items():
+            if key.startswith('core.'):
                 continue
             try:
                 ret = fun()
@@ -1219,13 +1236,6 @@ class Loader(object):
                     exc_info=True
                 )
                 continue
-            if not isinstance(ret, dict):
-                continue
-            grains_data.update(ret)
-        for key, fun in funcs.items():
-            if key[key.index('.') + 1:] != 'core':
-                continue
-            ret = fun()
             if not isinstance(ret, dict):
                 continue
             grains_data.update(ret)

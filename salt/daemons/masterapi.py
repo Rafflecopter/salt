@@ -217,13 +217,13 @@ def fileserver_update(fileserver):
     except Exception as exc:
         log.error(
             'Exception {0} occurred in file server update'.format(exc),
-            exc_info=log.isEnabledFor(logging.DEBUG)
+            exc_info_on_loglevel=logging.DEBUG
         )
 
 
 class AutoKey(object):
     '''
-    Impliment the methods to run auto key acceptance and rejection
+    Implement the methods to run auto key acceptance and rejection
     '''
     def __init__(self, opts):
         self.opts = opts
@@ -356,6 +356,7 @@ class RemoteFuncs(object):
                 'master',
                 self.opts['sock_dir'],
                 self.opts['transport'],
+                opts=self.opts,
                 listen=False)
         self.serial = salt.payload.Serial(opts)
         self.ckminions = salt.utils.minions.CkMinions(opts)
@@ -396,6 +397,9 @@ class RemoteFuncs(object):
             return False
         # If the command will make a recursive publish don't run
         if re.match('publish.*', load['fun']):
+            return False
+        # Don't allow pillar or compound matching
+        if load.get('tgt_type', 'glob').lower() in ('pillar', 'compound'):
             return False
         # Check the permissions for this minion
         perms = []
@@ -439,6 +443,7 @@ class RemoteFuncs(object):
         mopts['nodegroups'] = self.opts['nodegroups']
         mopts['state_auto_order'] = self.opts['state_auto_order']
         mopts['state_events'] = self.opts['state_events']
+        mopts['state_aggregate'] = self.opts['state_aggregate']
         mopts['jinja_lstrip_blocks'] = self.opts['jinja_lstrip_blocks']
         mopts['jinja_trim_blocks'] = self.opts['jinja_trim_blocks']
         return mopts
@@ -483,6 +488,9 @@ class RemoteFuncs(object):
         '''
         Gathers the data from the specified minions' mine
         '''
+        # Don't allow matching by pillar or compound
+        if load.get('expr_form', 'glob').lower() in ('pillar', 'compound'):
+            return {}
         if not skip_verify:
             if any(key not in load for key in ('id', 'tgt', 'fun')):
                 return {}
@@ -503,7 +511,8 @@ class RemoteFuncs(object):
         checker = salt.utils.minions.CkMinions(self.opts)
         minions = checker.check_minions(
                 load['tgt'],
-                load.get('expr_form', 'glob')
+                load.get('expr_form', 'glob'),
+                greedy=False
                 )
         for minion in minions:
             mine = os.path.join(
@@ -552,7 +561,7 @@ class RemoteFuncs(object):
         if self.opts.get('minion_data_cache', False) or self.opts.get('enforce_mine_cache', False):
             cdir = os.path.join(self.opts['cachedir'], 'minions', load['id'])
             if not os.path.isdir(cdir):
-                return True
+                return False
             datap = os.path.join(cdir, 'mine.p')
             if os.path.isfile(datap):
                 try:
@@ -575,7 +584,7 @@ class RemoteFuncs(object):
         if self.opts.get('minion_data_cache', False) or self.opts.get('enforce_mine_cache', False):
             cdir = os.path.join(self.opts['cachedir'], 'minions', load['id'])
             if not os.path.isdir(cdir):
-                return True
+                return False
             datap = os.path.join(cdir, 'mine.p')
             if os.path.isfile(datap):
                 try:
@@ -598,7 +607,7 @@ class RemoteFuncs(object):
             return False
         if not salt.utils.verify.valid_id(self.opts, load['id']):
             return False
-        file_recv_max_size = 1024*1024 * self.opts.get('file_recv_max_size', 100)
+        file_recv_max_size = 1024*1024 * self.opts['file_recv_max_size']
 
         if 'loc' in load and load['loc'] < 0:
             log.error('Invalid file pointer: load[loc] < 0')
@@ -611,12 +620,18 @@ class RemoteFuncs(object):
                 )
             )
             return False
+        # Normalize Windows paths
+        normpath = load['path']
+        if ':' in normpath:
+            # make sure double backslashes are normalized
+            normpath = normpath.replace('\\', '/')
+            normpath = os.path.normpath(normpath)
         cpath = os.path.join(
-                self.opts['cachedir'],
-                'minions',
-                load['id'],
-                'files',
-                load['path'])
+            self.opts['cachedir'],
+            'minions',
+            load['id'],
+            'files',
+            normpath)
         cdir = os.path.dirname(cpath)
         if not os.path.isdir(cdir):
             try:
@@ -942,6 +957,7 @@ class LocalFuncs(object):
                 'master',
                 self.opts['sock_dir'],
                 self.opts['transport'],
+                opts=self.opts,
                 listen=False)
         # Make a client
         self.local = salt.client.get_local_client(mopts=self.opts)
@@ -980,13 +996,10 @@ class LocalFuncs(object):
                 log.warning(msg)
                 return dict(error=dict(name='TokenAuthenticationError',
                                        message=msg))
-            if token['name'] not in self.opts['external_auth'][token['eauth']]:
-                msg = 'Authentication failure of type "token" occurred.'
-                log.warning(msg)
-                return dict(error=dict(name='TokenAuthenticationError',
-                                       message=msg))
             good = self.ckminions.runner_check(
-                    self.opts['external_auth'][token['eauth']][token['name']] if token['name'] in self.opts['external_auth'][token['eauth']] else self.opts['external_auth'][token['eauth']]['*'],
+                    self.opts['external_auth'][token['eauth']][token['name']]
+                    if token['name'] in self.opts['external_auth'][token['eauth']]
+                    else self.opts['external_auth'][token['eauth']]['*'],
                     load['fun'])
             if not good:
                 msg = ('Authentication failure of type "token" occurred for '
@@ -1007,7 +1020,7 @@ class LocalFuncs(object):
                         'introspecting {0}: {1}'.format(fun, exc))
                 return dict(error=dict(name=exc.__class__.__name__,
                                        args=exc.args,
-                                      message=exc.message))
+                                      message=str(exc)))
 
         if 'eauth' not in load:
             msg = ('Authentication failure of type "eauth" occurred for '
@@ -1058,7 +1071,7 @@ class LocalFuncs(object):
                         'introspecting {0}: {1}'.format(fun, exc))
                 return dict(error=dict(name=exc.__class__.__name__,
                                        args=exc.args,
-                                       message=exc.message))
+                                       message=str(exc)))
 
         except Exception as exc:
             log.error(
@@ -1066,7 +1079,7 @@ class LocalFuncs(object):
             )
             return dict(error=dict(name=exc.__class__.__name__,
                                    args=exc.args,
-                                   message=exc.message))
+                                   message=str(exc)))
 
     def wheel(self, load):
         '''
@@ -1092,15 +1105,10 @@ class LocalFuncs(object):
                 log.warning(msg)
                 return dict(error=dict(name='TokenAuthenticationError',
                                        message=msg))
-            if token['name'] not in self.opts['external_auth'][token['eauth']]:
-                msg = 'Authentication failure of type "token" occurred.'
-                log.warning(msg)
-                return dict(error=dict(name='TokenAuthenticationError',
-                                       message=msg))
             good = self.ckminions.wheel_check(
                     self.opts['external_auth'][token['eauth']][token['name']]
-                        if token['name'] in self.opts['external_auth'][token['eauth']]
-                        else self.opts['external_auth'][token['eauth']]['*'],
+                    if token['name'] in self.opts['external_auth'][token['eauth']]
+                    else self.opts['external_auth'][token['eauth']]['*'],
                     load['fun'])
             if not good:
                 msg = ('Authentication failure of type "token" occurred for '
@@ -1212,7 +1220,7 @@ class LocalFuncs(object):
             )
             return dict(error=dict(name=exc.__class__.__name__,
                                    args=exc.args,
-                                   message=exc.message))
+                                   message=str(exc)))
 
     def mk_token(self, load):
         '''

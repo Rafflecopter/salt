@@ -2,7 +2,7 @@
 '''
 Connection module for Amazon Elasticache
 
-.. versionadded:: Helium
+.. versionadded:: 2014.7.0
 
 :configuration: This module accepts explicit elasticache credentials but can
     also utilize IAM roles assigned to the instance trough Instance Profiles.
@@ -109,7 +109,7 @@ def get_config(name, region=None, key=None, keyid=None, profile=None):
              'preferred_availability_zone', 'security_groups',
              'cache_subnet_group_name', 'engine_version', 'cache_node_type',
              'notification_configuration', 'preferred_maintenance_window',
-             'configuration_endpoint', 'cache_nodes', 'cache_cluster_status']
+             'configuration_endpoint', 'cache_cluster_status']
     for key, val in cc.iteritems():
         _key = boto.utils.pythonize_name(key)
         if _key not in attrs:
@@ -138,6 +138,52 @@ def get_config(name, region=None, key=None, keyid=None, profile=None):
                 ret['notification_topic_arn'] = None
         else:
             ret[_key] = val
+    return ret
+
+
+def get_cache_subnet_group(name, region=None, key=None, keyid=None,
+                           profile=None):
+    '''
+    Get information about a cache subnet group.
+
+    CLI example::
+
+        salt myminion boto_elasticache.get_cache_subnet_group mycache_subnet_group
+    '''
+    conn = _get_conn(region, key, keyid, profile)
+    if not conn:
+        return False
+    try:
+        csg = conn.describe_cache_subnet_groups(name)
+        csg = csg['DescribeCacheSubnetGroupsResponse']
+        csg = csg['DescribeCacheSubnetGroupsResult']['CacheSubnetGroups'][0]
+    except boto.exception.BotoServerError as e:
+        msg = 'Failed to get cache subnet group {0}.'.format(name)
+        log.error(msg)
+        log.debug(e)
+        return False
+    except (IndexError, TypeError, KeyError):
+        msg = 'Failed to get cache subnet group {0} (2).'.format(name)
+        log.error(msg)
+        return False
+    ret = {}
+    for key, val in csg.iteritems():
+        if key == 'CacheSubnetGroupName':
+            ret['cache_subnet_group_name'] = val
+        elif key == 'CacheSubnetGroupDescription':
+            ret['cache_subnet_group_description'] = val
+        elif key == 'VpcId':
+            ret['vpc_id'] = val
+        elif key == 'Subnets':
+            ret['subnets'] = []
+            for subnet in val:
+                _subnet = {}
+                _subnet['subnet_id'] = subnet['SubnetIdentifier']
+                _az = subnet['SubnetAvailabilityZone']['Name']
+                _subnet['subnet_availability_zone'] = _az
+                ret['subnets'].append(_subnet)
+        else:
+            ret[key] = val
     return ret
 
 

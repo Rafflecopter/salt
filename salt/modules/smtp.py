@@ -2,7 +2,7 @@
 '''
 Module for Sending Messages via SMTP
 
-.. versionadded:: Helium
+.. versionadded:: 2014.7.0
 
 :depends:   - smtplib python module
 :configuration: This module can be used by either passing a jid and password
@@ -30,7 +30,7 @@ Module for Sending Messages via SMTP
             smtp.username: myuser
             smtp.password: verybadpass
 
-        my-smtp-login:
+        another-smtp-login:
             smtp.server: smtp.domain.com
             smtp.sender: admin@domain.com
             smtp.username: myuser

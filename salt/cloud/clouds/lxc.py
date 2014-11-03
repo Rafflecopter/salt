@@ -3,7 +3,7 @@
 Install Salt on an LXC Container
 ================================
 
-.. versionadded:: Helium
+.. versionadded:: 2014.7.0
 
 Please read :ref:`core config documentation <config_lxc>`.
 '''
@@ -22,7 +22,7 @@ import salt.utils
 # Import salt cloud libs
 import salt.utils.cloud
 import salt.config as config
-from salt.cloud.exceptions import SaltCloudSystemExit
+from salt.exceptions import SaltCloudSystemExit
 
 import salt.client
 import salt.runner

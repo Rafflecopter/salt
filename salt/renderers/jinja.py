@@ -186,7 +186,7 @@ Calling Salt Functions
 The Jinja renderer provides a shorthand lookup syntax for the ``salt``
 dictionary of :term:`execution function <Execution Function>`.
 
-.. versionadded:: Helium
+.. versionadded:: 2014.7.0
 
 .. code-block:: yaml
 
@@ -200,7 +200,7 @@ Debugging
 The ``show_full_context`` function can be used to output all variables present
 in the current Jinja context.
 
-.. versionadded:: Helium
+.. versionadded:: 2014.7.0
 
 .. code-block:: yaml
 
@@ -221,9 +221,9 @@ import salt.utils.templates
 log = logging.getLogger(__name__)
 
 
-def _split_module_dicts(__salt__):
+def _split_module_dicts():
     '''
-    Create a dictionary from module.function as module[function]
+    Create a copy of __salt__ dictionary with module.function and module[function]
 
     Takes advantage of Jinja's syntactic sugar lookup:
 
@@ -231,10 +231,15 @@ def _split_module_dicts(__salt__):
 
         {{ salt.cmd.run('uptime') }}
     '''
-    mod_dict = {}
-    for module_func_name in __salt__.keys():
-        mod, _, fun = module_func_name.partition('.')
-        mod_dict.setdefault(mod, {})[fun] = __salt__[module_func_name]
+    if not isinstance(__salt__, dict):
+        return __salt__
+    mod_dict = dict(__salt__)
+    for module_func_name, mod_fun in mod_dict.items():
+        mod, fun = module_func_name.split('.', 1)
+        if mod not in mod_dict:
+            # create an empty object that we can add attributes to
+            mod_dict[mod] = lambda: None
+        setattr(mod_dict[mod], fun, mod_fun)
     return mod_dict
 
 
@@ -252,13 +257,9 @@ def render(template_file, saltenv='base', sls='', argline='',
                 'Unknown renderer option: {opt}'.format(opt=argline)
         )
 
-    salt_dict = {}
-    salt_dict.update(_split_module_dicts(__salt__))
-    salt_dict.update(__salt__)
-
     tmp_data = salt.utils.templates.JINJA(template_file,
                                           to_str=True,
-                                          salt=salt_dict,
+                                          salt=_split_module_dicts(),
                                           grains=__grains__,
                                           opts=__opts__,
                                           pillar=__pillar__,

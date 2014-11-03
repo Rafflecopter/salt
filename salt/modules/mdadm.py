@@ -146,13 +146,13 @@ def destroy(device):
 def create(name,
            level,
            devices,
-           raid_devices=None,
+           metadata='default',
            test_mode=False,
            **kwargs):
     '''
     Create a RAID device.
 
-    .. versionchanged:: Helium
+    .. versionchanged:: 2014.7.0
 
     .. warning::
         Use with CAUTION, as this function can be very destructive if not used
@@ -162,7 +162,7 @@ def create(name,
 
     .. code-block:: bash
 
-        salt '*' raid.create /dev/md0 level=1 chunk=256 raid_devices=2 ['/dev/xvdd', '/dev/xvde'] test_mode=True
+        salt '*' raid.create /dev/md0 level=1 chunk=256 ['/dev/xvdd', '/dev/xvde'] test_mode=True
 
     .. note::
 
@@ -177,9 +177,6 @@ def create(name,
 
     devices
         A list of devices used to build the array.
-
-    raid_devices
-        The number of devices in the array.  If not specified, the number of devices will be counted.
 
     kwargs
         Optional arguments to be passed to mdadm.
@@ -202,35 +199,24 @@ def create(name,
 
     For more info, read the ``mdadm(8)`` manpage
     '''
-    cmd_args = {}
-
-    cmd_args['name'] = name
-    cmd_args['level'] = level
-    cmd_args['devices'] = ' '.join(devices)
-
-    if raid_devices is None:
-        cmd_args['raid-devices'] = len(devices)
-
-    opts = ''
+    opts = []
     for key in kwargs:
         if not key.startswith('__'):
-            if kwargs[key] is True:
-                opts += '--{0} '.format(key)
-            else:
-                opts += '--{0}={1} '.format(key, kwargs[key])
+            opts.append('--{0}'.format(key))
+            if kwargs[key] is not True:
+                opts.append(kwargs[key])
 
-    cmd_args['raw_args'] = opts
-
-    cmd = "mdadm -C {0} -v {1}-l {2} -n {3} {4}".format(cmd_args['name'],
-            cmd_args['raw_args'],
-            cmd_args['level'],
-            cmd_args['raid-devices'],
-            cmd_args['devices'])
+    cmd = ['mdadm',
+           '-C', name,
+           '-v'] + opts + [
+           '-l', level,
+           '-e', metadata,
+           '-n', len(devices)] + devices
 
     if test_mode is True:
         return cmd
     elif test_mode is False:
-        return __salt__['cmd.run'](cmd)
+        return __salt__['cmd.run'](cmd, python_shell=False)
 
 
 def save_config():
@@ -270,3 +256,57 @@ def save_config():
         __salt__['file.append'](cfg_file, scan)
 
     return __salt__['cmd.run']('update-initramfs -u')
+
+
+def assemble(name,
+             devices,
+             test_mode=False,
+             **kwargs):
+    '''
+    Assemble a RAID device.
+
+    CLI Examples:
+
+    .. code-block:: bash
+
+        salt '*' raid.assemble /dev/md0 ['/dev/xvdd', '/dev/xvde']
+
+    .. note::
+
+        Adding ``test_mode=True`` as an argument will print out the mdadm
+        command that would have been run.
+
+    name
+        The name of the array to assemble.
+
+    devices
+        The list of devices comprising the array to assemble.
+
+    kwargs
+        Optional arguments to be passed to mdadm.
+
+    returns
+        test_mode=True:
+            Prints out the full command.
+        test_mode=False (Default):
+            Executes command on the host(s) and prints out the mdadm output.
+
+    For more info, read the ``mdadm`` manpage.
+    '''
+    opts = []
+    for key in kwargs:
+        if not key.startswith('__'):
+            opts.append('--{0}'.format(key))
+            if kwargs[key] is not True:
+                opts.append(kwargs[key])
+
+    # Devices may have been written with a blob:
+    if type(devices) is str:
+        devices = devices.split(',')
+
+    cmd = ['mdadm', '-A', name, '-v', opts] + devices
+
+    if test_mode is True:
+        return cmd
+    elif test_mode is False:
+        return __salt__['cmd.run'](cmd, python_shell=False)

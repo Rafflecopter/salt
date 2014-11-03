@@ -13,7 +13,6 @@ import urlparse
 from copy import deepcopy
 import time
 import codecs
-
 # import third party libs
 import yaml
 try:
@@ -24,19 +23,15 @@ except Exception:
 
 # Import salt libs
 import salt.crypt
-import salt.loader
 import salt.utils
 import salt.utils.network
-import salt.pillar
 import salt.syspaths
 import salt.utils.validate.path
 import salt.utils.xdg
+import salt.exceptions
 from salt._compat import string_types
 
 import sys
-# can't use salt.utils.is_windows, because config.py is included from salt.utils
-if not sys.platform.lower().startswith('win'):
-    import salt.cloud.exceptions
 
 log = logging.getLogger(__name__)
 
@@ -86,7 +81,6 @@ VALID_OPTS = {
     'file_roots': dict,
     'pillar_roots': dict,
     'hash_type': str,
-    'external_nodes': str,
     'disable_modules': list,
     'disable_returners': list,
     'whitelist_modules': list,
@@ -149,6 +143,8 @@ VALID_OPTS = {
     'interface': str,
     'publish_port': int,
     'auth_mode': int,
+    'pub_hwm': int,
+    'rep_hwm': int,
     'worker_threads': int,
     'ret_port': int,
     'keep_jobs': int,
@@ -157,6 +153,12 @@ VALID_OPTS = {
     'gitfs_mountpoint': str,
     'gitfs_root': str,
     'gitfs_base': str,
+    'gitfs_user': str,
+    'gitfs_password': str,
+    'gitfs_insecure_auth': bool,
+    'gitfs_privkey': str,
+    'gitfs_pubkey': str,
+    'gitfs_passphrase': str,
     'gitfs_env_whitelist': list,
     'gitfs_env_blacklist': list,
     'hgfs_remotes': list,
@@ -182,7 +184,9 @@ VALID_OPTS = {
     'pillar_version': int,
     'pillar_opts': bool,
     'pillar_source_merging_strategy': str,
+    'ping_on_rotate': bool,
     'peer': dict,
+    'preserve_minion_cache': bool,
     'syndic_master': str,
     'runner_dirs': list,
     'client_acl': dict,
@@ -190,6 +194,7 @@ VALID_OPTS = {
     'external_auth': dict,
     'token_expire': int,
     'file_recv': bool,
+    'file_recv_max_size': int,
     'file_ignore_regex': bool,
     'file_ignore_glob': bool,
     'fileserver_backend': list,
@@ -240,7 +245,13 @@ VALID_OPTS = {
     'ssh_sudo': bool,
     'ssh_timeout': float,
     'ssh_user': str,
+    'ioflo_verbose': int,
+    'ioflo_period': float,
+    'ioflo_realtime': bool,
+    'ioflo_console_logdir': str,
     'raet_port': int,
+    'raet_mutable': bool,
+    'raet_main': bool,
     'sqlite_queue_dir': str,
     'queue_dirs': list,
     'restart_on_error': bool,
@@ -250,6 +261,7 @@ VALID_OPTS = {
     'username': str,
     'password': str,
     'zmq_filtering': bool,
+    'rotate_aes_key': bool,
 }
 
 # default configurations
@@ -280,6 +292,7 @@ DEFAULT_MINION_OPTS = {
     'failhard': False,
     'autoload_dynamic_modules': True,
     'environment': None,
+    'extension_modules': '',
     'state_top': 'top.sls',
     'startup_states': '',
     'sls_list': [],
@@ -289,11 +302,29 @@ DEFAULT_MINION_OPTS = {
         'base': [salt.syspaths.BASE_FILE_ROOTS_DIR],
     },
     'fileserver_limit_traversal': False,
+    'file_recv': False,
+    'file_recv_max_size': 100,
+    'file_ignore_regex': None,
+    'file_ignore_glob': None,
+    'fileserver_backend': ['roots'],
+    'fileserver_followsymlinks': True,
+    'fileserver_ignoresymlinks': False,
     'pillar_roots': {
         'base': [salt.syspaths.BASE_PILLAR_ROOTS_DIR],
     },
+    'gitfs_remotes': [],
+    'gitfs_mountpoint': '',
+    'gitfs_root': '',
+    'gitfs_base': 'master',
+    'gitfs_user': '',
+    'gitfs_password': '',
+    'gitfs_insecure_auth': False,
+    'gitfs_privkey': '',
+    'gitfs_pubkey': '',
+    'gitfs_passphrase': '',
+    'gitfs_env_whitelist': [],
+    'gitfs_env_blacklist': [],
     'hash_type': 'md5',
-    'external_nodes': '',
     'disable_modules': [],
     'disable_returners': [],
     'whitelist_modules': [],
@@ -348,7 +379,7 @@ DEFAULT_MINION_OPTS = {
     'recon_max': 10000,
     'recon_default': 1000,
     'recon_randomize': True,
-    'random_reauth_delay': 60,
+    'random_reauth_delay': 10,
     'win_repo_cachefile': 'salt://win/repo/winrepo.p',
     'pidfile': os.path.join(salt.syspaths.PIDFILE_DIR, 'salt-minion.pid'),
     'range_server': 'range:80',
@@ -369,7 +400,10 @@ DEFAULT_MINION_OPTS = {
     'ioflo_verbose': 0,
     'ioflo_period': 0.1,
     'ioflo_realtime': True,
+    'ioflo_console_logdir': '',
     'raet_port': 4510,
+    'raet_mutable': False,
+    'raet_main': False,
     'restart_on_error': False,
     'ping_interval': 0,
     'username': None,
@@ -381,6 +415,7 @@ DEFAULT_MASTER_OPTS = {
     'interface': '0.0.0.0',
     'publish_port': '4505',
     'pub_hwm': 1000,
+    'rep_hwm': 50000,
     'auth_mode': 1,
     'user': 'root',
     'worker_threads': 5,
@@ -404,6 +439,12 @@ DEFAULT_MASTER_OPTS = {
     'gitfs_mountpoint': '',
     'gitfs_root': '',
     'gitfs_base': 'master',
+    'gitfs_user': '',
+    'gitfs_password': '',
+    'gitfs_insecure_auth': False,
+    'gitfs_privkey': '',
+    'gitfs_pubkey': '',
+    'gitfs_passphrase': '',
     'gitfs_env_whitelist': [],
     'gitfs_env_blacklist': [],
     'hgfs_remotes': [],
@@ -432,7 +473,9 @@ DEFAULT_MASTER_OPTS = {
     'pillar_version': 2,
     'pillar_opts': True,
     'pillar_source_merging_strategy': 'smart',
+    'ping_on_rotate': False,
     'peer': {},
+    'preserve_minion_cache': False,
     'syndic_master': '',
     'runner_dirs': [],
     'outputter_dirs': [],
@@ -440,7 +483,9 @@ DEFAULT_MASTER_OPTS = {
     'client_acl_blacklist': {},
     'external_auth': {},
     'token_expire': 43200,
+    'extension_modules': os.path.join(salt.syspaths.CACHE_DIR, 'extmods'),
     'file_recv': False,
+    'file_recv_max_size': 100,
     'file_buffer_size': 1048576,
     'file_ignore_regex': None,
     'file_ignore_glob': None,
@@ -457,7 +502,6 @@ DEFAULT_MASTER_OPTS = {
     'failhard': False,
     'state_top': 'top.sls',
     'master_tops': {},
-    'external_nodes': '',
     'order_masters': False,
     'job_cache': True,
     'ext_job_cache': '',
@@ -522,7 +566,10 @@ DEFAULT_MASTER_OPTS = {
     'ioflo_verbose': 0,
     'ioflo_period': 0.01,
     'ioflo_realtime': True,
+    'ioflo_console_logdir': '',
     'raet_port': 4506,
+    'raet_mutable': False,
+    'raet_main': True,
     'sqlite_queue_dir': os.path.join(salt.syspaths.CACHE_DIR, 'master', 'queues'),
     'queue_dirs': [],
     'cli_summary': False,
@@ -532,6 +579,7 @@ DEFAULT_MASTER_OPTS = {
     'master_pubkey_signature': 'master_pubkey_signature',
     'master_use_pubkey_signature': False,
     'zmq_filtering': False,
+    'rotate_aes_key': True,
 }
 
 # ----- Salt Cloud Configuration Defaults ----------------------------------->
@@ -822,7 +870,6 @@ def insert_system_path(opts, paths):
 def minion_config(path,
                   env_var='SALT_MINION_CONFIG',
                   defaults=None,
-                  check_dns=None,
                   minion_id=False):
     '''
     Reads in the minion configuration file and sets up special options
@@ -836,19 +883,6 @@ def minion_config(path,
         import salt.client
         minion_opts = salt.config.minion_config('/etc/salt/minion')
     '''
-    if check_dns is not None:
-        # All use of the `check_dns` arg was removed in `598d715`. The keyword
-        # argument was then removed in `9d893e4` and `**kwargs` was then added
-        # in `5d60f77` in order not to break backwards compatibility.
-        #
-        # Showing a deprecation for 0.17.0 and 2014.1.0 should be enough for any
-        # api calls to be updated in order to stop its use.
-        salt.utils.warn_until(
-            'Helium',
-            'The functionality behind the \'check_dns\' keyword argument is '
-            'no longer required, as such, it became unnecessary and is now '
-            'deprecated. \'check_dns\' will be removed in Salt {version}.'
-        )
     if defaults is None:
         defaults = DEFAULT_MINION_OPTS
 
@@ -969,63 +1003,16 @@ def apply_sdb(opts, sdb_opts=None):
 def cloud_config(path, env_var='SALT_CLOUD_CONFIG', defaults=None,
                  master_config_path=None, master_config=None,
                  providers_config_path=None, providers_config=None,
-                 vm_config_path=None, vm_config=None,
                  profiles_config_path=None, profiles_config=None):
     '''
     Read in the salt cloud config and return the dict
     '''
-    if vm_config and profiles_config:
-        # This is a bad API usage
-        raise RuntimeError(
-            '`vm_config` and `profiles_config` are mutually exclusive and '
-            '`vm_config` is being deprecated in favor of `profiles_config`.'
-        )
-    elif vm_config:
-        salt.utils.warn_until(
-            'Helium',
-            'The support for `vm_config` has been deprecated and will be '
-            'removed in Salt Helium. Please use `profiles_config`.'
-        )
-        profiles_config = vm_config
-        vm_config = None
-    if vm_config_path and profiles_config_path:
-        # This is a bad API usage
-        raise RuntimeError(
-            '`vm_config_path` and `profiles_config_path` are mutually '
-            'exclusive and `vm_config_path` is being deprecated in favor of '
-            '`profiles_config_path`'
-        )
-    elif vm_config_path:
-        salt.utils.warn_until(
-            'Helium',
-            'The support for `vm_config_path` has been deprecated and will be '
-            'removed in Salt Helium. Please use `profiles_config_path`.'
-        )
-        profiles_config_path = vm_config_path
-        vm_config_path = None
-
     # Load the cloud configuration
     overrides = load_config(
         path,
         env_var,
         os.path.join(salt.syspaths.CONFIG_DIR, 'cloud')
     )
-
-    if 'vm_config' in overrides and 'profiles_config' in overrides:
-        raise salt.cloud.exceptions.SaltCloudConfigError(
-            '`vm_config` and `profiles_config` are mutually exclusive and '
-            '`vm_config` is being deprecated in favor of `profiles_config`.'
-        )
-    elif 'vm_config' in overrides:
-        salt.utils.warn_until(
-            'Helium',
-            'The support for `vm_config` has been deprecated and will be '
-            'removed in Salt Helium. Please use `profiles_config`.'
-            'Please update the could configuration file(s).'
-
-        )
-        overrides['profiles_config'] = overrides.pop('vm_config')
-
     if path:
         config_dir = os.path.dirname(path)
     else:
@@ -1128,7 +1115,7 @@ def cloud_config(path, env_var='SALT_CLOUD_CONFIG', defaults=None,
     # Grab data from the 4 sources
     # 1st - Master config
     if master_config_path is not None and master_config is not None:
-        raise salt.cloud.exceptions.SaltCloudConfigError(
+        raise salt.exceptions.SaltCloudConfigError(
             'Only pass `master_config` or `master_config_path`, not both.'
         )
     elif master_config_path is None and master_config is None:
@@ -1152,7 +1139,7 @@ def cloud_config(path, env_var='SALT_CLOUD_CONFIG', defaults=None,
     overrides = master_config
 
     if providers_config_path is not None and providers_config is not None:
-        raise salt.cloud.exceptions.SaltCloudConfigError(
+        raise salt.exceptions.SaltCloudConfigError(
             'Only pass `providers_config` or `providers_config_path`, '
             'not both.'
         )
@@ -1165,7 +1152,7 @@ def cloud_config(path, env_var='SALT_CLOUD_CONFIG', defaults=None,
         )
 
     if profiles_config_path is not None and profiles_config is not None:
-        raise salt.cloud.exceptions.SaltCloudConfigError(
+        raise salt.exceptions.SaltCloudConfigError(
             'Only pass `profiles_config` or `profiles_config_path`, not both.'
         )
     elif profiles_config_path is None and profiles_config is None:
@@ -1182,7 +1169,7 @@ def cloud_config(path, env_var='SALT_CLOUD_CONFIG', defaults=None,
     # 3rd - Include Cloud Providers
     if 'providers' in opts:
         if providers_config is not None:
-            raise salt.cloud.exceptions.SaltCloudConfigError(
+            raise salt.exceptions.SaltCloudConfigError(
                 'Do not mix the old cloud providers configuration with '
                 'the passing a pre-configured providers configuration '
                 'dictionary.'
@@ -1196,7 +1183,7 @@ def cloud_config(path, env_var='SALT_CLOUD_CONFIG', defaults=None,
 
             if (os.path.isfile(providers_config_path) or
                     glob.glob(providers_confd)):
-                raise salt.cloud.exceptions.SaltCloudConfigError(
+                raise salt.exceptions.SaltCloudConfigError(
                     'Do not mix the old cloud providers configuration with '
                     'the new one. The providers configuration should now go '
                     'in the file `{0}` or a separate `*.conf` file within '
@@ -1249,7 +1236,7 @@ def apply_cloud_config(overrides, defaults=None):
             if isinstance(details, list):
                 for detail in details:
                     if 'provider' not in detail:
-                        raise salt.cloud.exceptions.SaltCloudConfigError(
+                        raise salt.exceptions.SaltCloudConfigError(
                             'The cloud provider alias {0!r} has an entry '
                             'missing the required setting \'provider\''.format(
                                 alias
@@ -1268,7 +1255,7 @@ def apply_cloud_config(overrides, defaults=None):
                     config['providers'][alias][driver] = detail
             elif isinstance(details, dict):
                 if 'provider' not in details:
-                    raise salt.cloud.exceptions.SaltCloudConfigError(
+                    raise salt.exceptions.SaltCloudConfigError(
                         'The cloud provider alias {0!r} has an entry '
                         'missing the required setting \'provider\''.format(
                             alias
@@ -1369,7 +1356,7 @@ def apply_vm_profiles_config(providers, overrides, defaults=None):
         if key in ('conf_file', 'include', 'default_include', 'user'):
             continue
         if not isinstance(val, dict):
-            raise salt.cloud.exceptions.SaltCloudConfigError(
+            raise salt.exceptions.SaltCloudConfigError(
                 'The VM profiles configuration found in {0[conf_file]!r} is '
                 'not in the proper format'.format(config)
             )
@@ -1550,7 +1537,7 @@ def apply_cloud_providers_config(overrides, defaults=None):
                         'single entry for EC2, Joyent, Openstack, and so '
                         'forth.'
                     )
-                    raise salt.cloud.exceptions.SaltCloudConfigError(
+                    raise salt.exceptions.SaltCloudConfigError(
                         'The cloud provider alias {0!r} has multiple entries '
                         'for the {1[provider]!r} driver.'.format(key, details)
                     )
@@ -1585,7 +1572,7 @@ def apply_cloud_providers_config(overrides, defaults=None):
                 if ':' in extends:
                     alias, provider = extends.split(':')
                     if alias not in providers:
-                        raise salt.cloud.exceptions.SaltCloudConfigError(
+                        raise salt.exceptions.SaltCloudConfigError(
                             'The {0!r} cloud provider entry in {1!r} is '
                             'trying to extend data from {2!r} though {2!r} '
                             'is not defined in the salt cloud providers '
@@ -1597,7 +1584,7 @@ def apply_cloud_providers_config(overrides, defaults=None):
                         )
 
                     if provider not in providers.get(alias):
-                        raise salt.cloud.exceptions.SaltCloudConfigError(
+                        raise salt.exceptions.SaltCloudConfigError(
                             'The {0!r} cloud provider entry in {1!r} is '
                             'trying to extend data from \'{2}:{3}\' though '
                             '{3!r} is not defined in {1!r}'.format(
@@ -1611,7 +1598,7 @@ def apply_cloud_providers_config(overrides, defaults=None):
                     # change provider details '-only-extendable-' to extended provider name
                     details['provider'] = provider
                 elif providers.get(extends):
-                    raise salt.cloud.exceptions.SaltCloudConfigError(
+                    raise salt.exceptions.SaltCloudConfigError(
                         'The {0!r} cloud provider entry in {1!r} is trying '
                         'to extend from {2!r} and no provider was specified. '
                         'Not extending!'.format(
@@ -1619,7 +1606,7 @@ def apply_cloud_providers_config(overrides, defaults=None):
                         )
                     )
                 elif extends not in providers:
-                    raise salt.cloud.exceptions.SaltCloudConfigError(
+                    raise salt.exceptions.SaltCloudConfigError(
                         'The {0!r} cloud provider entry in {1!r} is trying '
                         'to extend data from {2!r} though {2!r} is not '
                         'defined in the salt cloud providers loaded '
@@ -1877,7 +1864,7 @@ def get_id(opts, minion_id=False):
                 if name.startswith(codecs.BOM):  # Remove BOM if exists
                     name = name.replace(codecs.BOM, '', 1)
             if name:
-                log.info('Using cached minion ID from {0}: {1}'
+                log.debug('Using cached minion ID from {0}: {1}'
                          .format(id_cache, name))
                 return name, False
         except (IOError, OSError):
@@ -1896,25 +1883,10 @@ def get_id(opts, minion_id=False):
 
 def apply_minion_config(overrides=None,
                         defaults=None,
-                        check_dns=None,
                         minion_id=False):
     '''
     Returns minion configurations dict.
     '''
-    if check_dns is not None:
-        # All use of the `check_dns` arg was removed in `598d715`. The keyword
-        # argument was then removed in `9d893e4` and `**kwargs` was then added
-        # in `5d60f77` in order not to break backwards compatibility.
-        #
-        # Showing a deprecation for 0.17.0 and 2014.1.0 should be enough for any
-        # api calls to be updated in order to stop its use.
-        salt.utils.warn_until(
-            'Helium',
-            'The functionality behind the \'check_dns\' keyword argument is '
-            'no longer required, as such, it became unnecessary and is now '
-            'deprecated. \'check_dns\' will be removed in Salt {version}.'
-        )
-
     if defaults is None:
         defaults = DEFAULT_MINION_OPTS
 
@@ -2038,6 +2010,20 @@ def apply_master_config(overrides=None, defaults=None):
         os.path.join(opts['cachedir'], 'extmods')
     )
     opts['token_dir'] = os.path.join(opts['cachedir'], 'tokens')
+
+    using_ip_for_id = False
+    append_master = False
+    if opts.get('id') is None:
+        opts['id'], using_ip_for_id = get_id(
+                opts,
+                minion_id=None)
+        append_master = True
+
+    # it does not make sense to append a domain to an IP based id
+    if not using_ip_for_id and 'append_domain' in opts:
+        opts['id'] = _append_domain(opts)
+    if append_master:
+        opts['id'] += '_master'
 
     # Prepend root_dir to other paths
     prepend_root_dirs = [
@@ -2197,4 +2183,4 @@ def api_config(path):
     # Let's override them with salt-api's required defaults
     defaults.update(DEFAULT_API_OPTS)
 
-    return master_config(path, defaults=defaults)
+    return client_config(path, defaults=defaults)

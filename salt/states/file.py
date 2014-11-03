@@ -463,8 +463,8 @@ def _check_directory(name,
     if changes:
         comments = ['The following files will be changed:\n']
         for fn_ in changes:
-            key, val = changes[fn_].keys()[0], changes[fn_].values()[0]
-            comments.append('{0}: {1} - {2}\n'.format(fn_, key, val))
+            for key, val in changes[fn_].items():
+                comments.append('{0}: {1} - {2}\n'.format(fn_, key, val))
         return None, ''.join(comments)
     return True, 'The directory {0} is in the correct state'.format(name)
 
@@ -1008,6 +1008,18 @@ def managed(name,
         If the file is hosted on a HTTP or FTP server then the source_hash
         argument is also required
 
+        A list of sources can also be passed in to provide a default source and
+        a set of fallbacks. The first source in the list that is found to exist
+        will be used and subsequent entries in the list will be ignored.
+
+        .. code-block:: yaml
+
+            file_override_example:
+              file.managed:
+                - source:
+                  - salt://file_that_does_not_exist
+                  - salt://file_that_exists
+
     source_hash
         This can be one of the following:
             1. a source hash string
@@ -1157,28 +1169,30 @@ def managed(name,
             spaces.
 
     contents_grains
-        .. versionadded:: Helium
+        .. versionadded:: 2014.7.0
 
         Same as contents_pillar, but with grains
 
     contents_newline
-        .. versionadded:: Helium
+        .. versionadded:: 2014.7.0
 
-        When using contents, contents_pillar, or contents_grains, a newline is
-        inserted into the data. When loading some data this newline is better
-        left off.  Setting contents_newline to False will omit this newline.
+        When using contents, contents_pillar, or contents_grains, this option
+        ensures the file will have a newline at the end.
+        When loading some data this newline is better left off. Setting
+        contents_newline to False will omit this final newline.
 
     follow_symlinks : True
-        .. versionadded:: Helium
+        .. versionadded:: 2014.7.0
 
         If the desired path is a symlink follow it and make changes to the
         file to which the symlink points.
 
     check_cmd
-        .. versionadded:: Helium
+        .. versionadded:: 2014.7.0
 
-        Do run the state only if the check_cmd succeeds
-
+        The specified command will be run with the managed file as an argument.
+        If the command exits with a nonzero exit code, the command will not be
+        run.
     '''
     # Make sure that leading zeros stripped by YAML loader are added back
     mode = __salt__['config.manage_mode'](mode)
@@ -1192,7 +1206,7 @@ def managed(name,
             'Neither \'source\' nor \'contents\' nor \'contents_pillar\' nor \'contents_grains\' '
             'was defined, yet \'replace\' was set to \'True\'. As there is '
             'no source to replace the file with, \'replace\' has been set '
-            'to \'False\' to avoid reading the file unnecessarily'.format(name)
+            'to \'False\' to avoid reading the file unnecessarily'
         )
 
     user = _test_owner(kwargs, user=user)
@@ -1242,6 +1256,9 @@ def managed(name,
     elif not isinstance(context, dict):
         return _error(
             ret, 'Context must be formed as a dict')
+    if defaults and not isinstance(defaults, dict):
+        return _error(
+            ret, 'Defaults must be formed as a dict')
 
     if len(filter(None, [contents, contents_pillar, contents_grains])) > 1:
         return _error(
@@ -1364,9 +1381,11 @@ def managed(name,
                    'name': name,
                    'result': True}
 
-            cret = mod_run_check_cmd(
-                check_cmd, tmp_filename
-            )
+            check_cmd_opts = {}
+            if 'shell' in __grains__:
+                check_cmd_opts['shell'] = __grains__['shell']
+
+            cret = mod_run_check_cmd(check_cmd, tmp_filename, **check_cmd_opts)
             if isinstance(cret, dict):
                 ret.update(cret)
                 return ret
@@ -1485,13 +1504,13 @@ def directory(name,
         .. versionadded:: 2014.1.4
 
     force
-        If the name of the directory exists and is not a direcotry and
+        If the name of the directory exists and is not a directory and
         force is set to False, the state will fail. If force is set to
         True, the file in the way of the directory will be deleted to
         make room for the directory, unless backupname is set,
         then it will be renamed.
 
-        .. versionadded:: Helium
+        .. versionadded:: 2014.7.0
 
     backupname
         If the name of the directory exists and is not a directory, it will be
@@ -1499,7 +1518,7 @@ def directory(name,
         exists and force is False, the state will fail. Otherwise, the
         backupname will be removed first.
 
-        .. versionadded:: Helium
+        .. versionadded:: 2014.7.0
 
     '''
     # Remove trailing slash, if present
@@ -1638,7 +1657,7 @@ def directory(name,
                     if isinstance(gid, string_types):
                         ret['result'] = False
                         ret['comment'] = 'Failed to enforce group ownership ' \
-                                         'for group {0}'.format(group, user)
+                                         'for group {0}'.format(group)
                 else:
                     ret['result'] = False
                     ret['comment'] = 'group not specified, but configured ' \
@@ -2185,7 +2204,8 @@ def replace(name,
 
     .. versionadded:: 0.17.0
 
-    Params are identical to :py:func:`~salt.modules.file.replace`.
+    Params are identical to the remote execution function :mod:`file.replace
+    <salt.modules.file.replace>`.
 
     '''
     ret = {'name': name, 'changes': {}, 'result': False, 'comment': ''}
@@ -2369,7 +2389,7 @@ def sed(name,
         negate_match=False):
     '''
     .. deprecated:: 0.17.0
-       Use :py:func:`~salt.states.file.replace` instead.
+       Use the :mod:`file.replace <salt.states.file.replace>` state instead.
 
     Maintain a simple edit to a file
 
@@ -2911,6 +2931,7 @@ def append(name,
                 )
         else:
             ret['comment'] = 'File {0} is in correct state'.format(name)
+            ret['result'] = True
         return ret
 
     with salt.utils.fopen(name, 'rb') as fp_:
@@ -2983,7 +3004,7 @@ def prepend(name,
                   - salt://motd/hr-messages.tmpl
                   - salt://motd/general-messages.tmpl
 
-    .. versionadded:: Helium
+    .. versionadded:: 2014.7.0
     '''
     ret = {'name': name, 'changes': {}, 'result': False, 'comment': ''}
 
@@ -3067,7 +3088,6 @@ def prepend(name,
 
     if __opts__['test']:
         nlines = test_lines + slines
-        ret['result'] = None
         if slines != nlines:
             if not salt.utils.istextfile(name):
                 ret['changes']['diff'] = 'Replace binary file'
@@ -3076,8 +3096,10 @@ def prepend(name,
                 ret['changes']['diff'] = (
                     ''.join(difflib.unified_diff(slines, nlines))
                 )
+            ret['result'] = None
         else:
             ret['comment'] = 'File {0} is in correct state'.format(name)
+            ret['result'] = True
         return ret
 
     __salt__['file.prepend'](name, *preface)
@@ -3517,6 +3539,10 @@ def accumulated(name, filename, text, **kwargs):
         'result': True,
         'comment': ''
     }
+    if text is None:
+        ret['result'] = False
+        ret['comment'] = 'No text supplied for accumulator'
+        return ret
     require_in = __low__.get('require_in', [])
     watch_in = __low__.get('watch_in', [])
     deps = require_in + watch_in
@@ -3646,7 +3672,7 @@ def serialize(name,
         be parsed and the dataset passed in will be merged with the existing
         content
 
-        .. versionadded:: Helium
+        .. versionadded:: 2014.7.0
 
     For example, this state:
 
@@ -3983,7 +4009,7 @@ def mknod(name, ntype, major=0, minor=0, user=None, group=None, mode='0600'):
     return ret
 
 
-def mod_run_check_cmd(cmd, filename):
+def mod_run_check_cmd(cmd, filename, **check_cmd_opts):
     '''
     Execute the check_cmd logic
     Return a result dict if:
@@ -3993,9 +4019,10 @@ def mod_run_check_cmd(cmd, filename):
 
     log.debug('running our check_cmd')
     _cmd = '{0} {1}'.format(cmd, filename)
-    if __salt__['cmd.retcode'](_cmd) != 0:
+    if __salt__['cmd.retcode'](_cmd, **check_cmd_opts) != 0:
         return {'comment': 'check_cmd execution failed',
-                'result': True}
+                'skip_watch': True,
+                'result': False}
 
     # No reason to stop, return True
     return True

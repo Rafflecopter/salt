@@ -6,6 +6,14 @@ OpenStack is one the most popular cloud projects. It's an open source project
 to build public and/or private clouds. You can use Salt Cloud to launch
 OpenStack instances.
 
+
+Dependencies
+============
+* Libcloud >= 0.13.2
+
+
+Configuration
+=============
 * Using the new format, set up the cloud configuration at
   ``/etc/salt/cloud.providers`` or
   ``/etc/salt/cloud.providers.d/openstack.conf``:
@@ -37,7 +45,6 @@ OpenStack instances.
 
       # skip SSL certificate validation (default false)
       insecure: false
-
 
 
 Using nova client to get information from OpenStack
@@ -128,3 +135,13 @@ bootstrapped.
 .. code-block:: yaml
 
     change_password: True
+
+
+userdata_file
+~~~~~~~~~~~~~
+Use `userdata_file` to specify the userdata file to upload for use with
+cloud-init if available.
+
+.. code-block:: yaml
+
+    userdata_file: /etc/salt/cloud-init/packages.yml

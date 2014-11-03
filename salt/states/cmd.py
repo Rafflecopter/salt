@@ -34,8 +34,7 @@ touch /tmp/foo if it does not exist.
 
 .. note::
 
-    The ``creates`` option will be supported starting with the feature release
-    codenamed Helium
+    The ``creates`` option was added to version 2014.7.0
 
 Salt determines whether the ``cmd`` state is successfully enforced based on the exit
 code returned by the command. If the command returns a zero exit code, then salt
@@ -302,6 +301,7 @@ def mod_run_check(cmd_kwargs, onlyif, unless, group, creates):
             log.debug('Last command return code: {0}'.format(cmd))
             if cmd != 0:
                 return {'comment': 'onlyif execution failed',
+                        'skip_watch': True,
                         'result': True}
         elif isinstance(onlyif, list):
             for entry in onlyif:
@@ -309,11 +309,13 @@ def mod_run_check(cmd_kwargs, onlyif, unless, group, creates):
                 log.debug('Last command return code: {0}'.format(cmd))
                 if cmd != 0:
                     return {'comment': 'onlyif execution failed',
+                        'skip_watch': True,
                         'result': True}
         elif not isinstance(onlyif, string_types):
             if not onlyif:
                 log.debug('Command not run: onlyif did not evaluate to string_type')
                 return {'comment': 'onlyif execution failed',
+                        'skip_watch': True,
                         'result': True}
 
     if unless is not None:
@@ -322,6 +324,7 @@ def mod_run_check(cmd_kwargs, onlyif, unless, group, creates):
             log.debug('Last command return code: {0}'.format(cmd))
             if cmd == 0:
                 return {'comment': 'unless execution succeeded',
+                        'skip_watch': True,
                         'result': True}
         elif isinstance(unless, list):
             for entry in unless:
@@ -329,11 +332,13 @@ def mod_run_check(cmd_kwargs, onlyif, unless, group, creates):
                 log.debug('Last command return code: {0}'.format(cmd))
                 if cmd == 0:
                     return {'comment': 'unless execution succeeded',
+                            'skip_watch': True,
                             'result': True}
         elif not isinstance(unless, string_types):
             if unless:
                 log.debug('Command not run: unless did not evaluate to string_type')
                 return {'comment': 'unless execution succeeded',
+                        'skip_watch': True,
                         'result': True}
 
     if isinstance(creates, string_types) and os.path.exists(creates):
@@ -342,7 +347,7 @@ def mod_run_check(cmd_kwargs, onlyif, unless, group, creates):
     elif isinstance(creates, list) and all([
         os.path.exists(path) for path in creates
     ]):
-        return {'comment': 'All files in creates exist'.format(creates),
+        return {'comment': 'All files in creates exist',
                 'result': True}
 
     # No reason to stop, return True
@@ -421,7 +426,7 @@ def wait(name,
     creates
         Only run if the file specified by ``creates`` does not exist.
 
-        .. versionadded:: Helium
+        .. versionadded:: 2014.7.0
 
     output_loglevel
         Control the loglevel at which the output from the command is logged.
@@ -634,7 +639,7 @@ def run(name,
     creates
         Only run if the file specified by ``creates`` does not exist.
 
-        .. versionadded:: Helium
+        .. versionadded:: 2014.7.0
 
     use_vt
         Use VT utils (saltstack) to stream the command output more
@@ -821,7 +826,7 @@ def script(name,
     creates
         Only run if the file specified by ``creates`` does not exist.
 
-        .. versionadded:: Helium
+        .. versionadded:: 2014.7.0
 
     use_vt
         Use VT utils (saltstack) to stream the command output more

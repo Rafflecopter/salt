@@ -76,6 +76,8 @@ Each direct requisite also has a corresponding requisite_in: ``require_in``,
 All of the requisites define specific relationships and always work with the
 dependency logic defined above.
 
+.. _requisites-require:
+
 require
 ~~~~~~~
 
@@ -102,6 +104,8 @@ including the sls file and then setting a state to ``require`` the included sls 
       pkg.installed:
         - require:
           - sls: foo
+
+.. _requisites-watch:
 
 watch
 ~~~~~
@@ -186,6 +190,8 @@ to Salt ensuring that the service is running.
         - name: /etc/ntp.conf
         - source: salt://ntp/files/ntp.conf
 
+.. _requisites-prereq:
+
 prereq
 ~~~~~~
 
@@ -204,10 +210,10 @@ examples of "changes" dictionaries.)
 
 If the "changes" key contains a populated dictionary, it means that the
 pre-required state expects changes to occur when the state is actually
-executed, as opposed to the test-run. The pre-required state will now
-actually run. If the pre-required state executes successfully, the
-pre-requiring state will then execute. If the pre-required state fails, the
-pre-requiring state will not execute.
+executed, as opposed to the test-run. The pre-requiring state will now
+actually run. If the pre-requiring state executes successfully, the
+pre-required state will then execute. If the pre-requiring state fails, the
+pre-required state will not execute.
 
 If the "changes" key contains an empty dictionary, this means that changes are
 not expected by the pre-required state. Neither the pre-required state nor the
@@ -240,7 +246,7 @@ successfully.
 onfail
 ~~~~~~
 
-.. versionadded:: Helium
+.. versionadded:: 2014.7.0
 
 The ``onfail`` requisite allows for reactions to happen strictly as a response
 to the failure of another state. This can be used in a number of ways, such as
@@ -270,7 +276,7 @@ The ``onfail`` requisite is applied in the same way as ``require`` as ``watch``:
 onchanges
 ~~~~~~~~~
 
-.. versionadded:: Helium
+.. versionadded:: 2014.7.0
 
 The ``onchanges`` requisite makes a state only apply if the required states
 generate changes, and if the watched state's "result" is ``True``. This can be
@@ -401,11 +407,6 @@ be installed. Thus allowing for a requisite to be defined "after the fact".
 Altering States
 ===============
 
-.. note::
-
-    The ``unless``, ``onlyif``, and ``check_cmd`` options will be supported
-    starting with the feature release codenamed Helium
-
 The state altering system is used to make sure that states are evaluated exactly
 as the user expects.  It can be used to double check that a state preformed
 exactly how it was expected to, or to make 100% sure that a state only runs
@@ -414,27 +415,38 @@ even more stateful.  The check_cmds option helps ensure that the result of a
 state is evaluated correctly.
 
 Unless
-~~~~~~
+------
 
-Use unless to only run if any of the specified commands return False.
+.. versionadded:: 2014.7.0
+
+The ``unless`` requisite specifies that a state should only run when any of
+the specified commands return ``False``. The ``unless`` requisite operates
+as NOR and is useful in giving more granular control over when a state should
+execute.
 
 .. code-block:: yaml
 
     vim:
       pkg.installed:
         - unless:
-            - rpm -q vim-enhanced
-            - ls /usr/bin/vim
+          - rpm -q vim-enhanced
+          - ls /usr/bin/vim
 
-This state will not run if the vim-enhanced package is already installed, or if
-/usr/bin/vim exists.  It gives more granular control over when a state should be
-run.
+In the example above, the state will only run if either the vim-enhanced
+package is not installed (returns ``False``) or if /usr/bin/vim does not
+exist (returns ``False``). The state will run if both commands return
+``False``.
+
+However, the state will not run if both commands return ``True``.
 
 Onlyif
-~~~~~~
+------
 
-Onlyif is the opposite of Unless.  If all of the commands in onlyif return True,
-then the state is run.
+.. versionadded:: 2014.7.0
+
+``onlyif`` is the opposite of ``unless``. If all of the commands in ``onlyif``
+return ``True``, then the state is run. If any of the specified commands
+return ``False``, the state will not run.
 
 .. code-block:: yaml
 
@@ -455,11 +467,13 @@ then the state is run.
         - watch:
           - cmd: stop-volume
 
-This will ensure that the stop_volume and delete modules are only run if the
-gluster commands return back a 0 ret value.
+The above example ensures that the stop_volume and delete modules only run
+if the gluster commands return a 0 ret value.
 
-Check_Cmd
-~~~~~~~~~
+check_cmd
+---------
+
+.. versionadded:: 2014.7.0
 
 Check Command is used for determining that a state did or did not run as
 expected.

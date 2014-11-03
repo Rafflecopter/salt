@@ -2,7 +2,7 @@
 '''
 Module for manging the Salt schedule on a minion
 
-.. versionadded:: Helium
+.. versionadded:: 2014.7.0
 
 '''
 
@@ -15,9 +15,6 @@ import salt.utils
 import salt.utils.odict
 
 __proxyenabled__ = ['*']
-
-import logging
-log = logging.getLogger(__name__)
 
 __func_alias__ = {
     'list_': 'list',
