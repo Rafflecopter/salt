@@ -22,7 +22,7 @@
 from collections import Callable
 
 try:
-    from collections import OrderedDict  # pylint: disable=E0611
+    from collections import OrderedDict  # pylint: disable=E0611,minimum-python-version
 except ImportError:
     try:
         from ordereddict import OrderedDict
@@ -195,7 +195,7 @@ except ImportError:
                     for key in other:
                         self[key] = other[key]
                 elif hasattr(other, 'keys'):
-                    for key in other.keys():
+                    for key in other:
                         self[key] = other[key]
                 else:
                     for key, value in other:

@@ -14,7 +14,6 @@ Basics
 .. toctree::
     :maxdepth: 2
 
-    salt_bootstrap
     standalone_minion
     firewall
     cron
@@ -49,6 +48,8 @@ Advanced Topics
     gitfs
     walkthrough_macosx
     writing_tests
+    http
+    lxc
 
 Salt Virt
 ==========
@@ -64,12 +65,16 @@ Halite
 
     halite
 
+LXC
+===
+.. toctree::
+    :maxdepth: 2
+
+    lxc
+
 Using Salt at scale
 ===================
 .. toctree::
     :maxdepth: 2
+
     intro_scale
-    the_master
-    the_minion
-
-

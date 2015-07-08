@@ -2,6 +2,7 @@
 '''
 A few checks to make sure the environment is sane
 '''
+from __future__ import absolute_import
 
 # Original Author: Jeff Schroeder <jeffschroeder@computer.org>
 
@@ -10,6 +11,7 @@ import os
 import re
 import sys
 import stat
+import errno
 import socket
 import logging
 
@@ -22,6 +24,7 @@ else:
 # Import salt libs
 from salt.log import is_console_configured
 from salt.exceptions import SaltClientError
+import salt.defaults.exitcodes
 import salt.utils
 
 log = logging.getLogger(__name__)
@@ -156,12 +159,15 @@ def verify_files(files, user):
         err = ('Failed to prepare the Salt environment for user '
                '{0}. The user is not available.\n').format(user)
         sys.stderr.write(err)
-        sys.exit(os.EX_NOUSER)
+        sys.exit(salt.defaults.exitcodes.EX_NOUSER)
     for fn_ in files:
         dirname = os.path.dirname(fn_)
         try:
-            if not os.path.isdir(dirname):
+            try:
                 os.makedirs(dirname)
+            except OSError as err:
+                if err.errno != errno.EEXIST:
+                    raise
             if not os.path.isfile(fn_):
                 with salt.utils.fopen(fn_, 'w+') as fp_:
                     fp_.write('')
@@ -197,7 +203,7 @@ def verify_env(dirs, user, permissive=False, pki_dir=''):
         err = ('Failed to prepare the Salt environment for user '
                '{0}. The user is not available.\n').format(user)
         sys.stderr.write(err)
-        sys.exit(os.EX_NOUSER)
+        sys.exit(salt.defulats.exitcodes.EX_NOUSER)
     for dir_ in dirs:
         if not dir_:
             continue
@@ -292,11 +298,23 @@ def check_user(user):
         pwuser = pwd.getpwnam(user)
         try:
             if hasattr(os, 'initgroups'):
-                os.initgroups(user, pwuser.pw_gid)
+                os.initgroups(user, pwuser.pw_gid)  # pylint: disable=minimum-python-version
             else:
                 os.setgroups(salt.utils.get_gid_list(user, include_default=False))
             os.setgid(pwuser.pw_gid)
             os.setuid(pwuser.pw_uid)
+
+            # We could just reset the whole environment but let's just override
+            # the variables we can get from pwuser
+            if 'HOME' in os.environ:
+                os.environ['HOME'] = pwuser.pw_dir
+
+            if 'SHELL' in os.environ:
+                os.environ['SHELL'] = pwuser.pw_shell
+
+            for envvar in ('USER', 'LOGNAME'):
+                if envvar in os.environ:
+                    os.environ[envvar] = pwuser.pw_name
 
         except OSError:
             msg = 'Salt configured to run as user "{0}" but unable to switch.'
@@ -360,8 +378,7 @@ def check_path_traversal(path, user='root', skip_perm_errors=False):
                 if user != current_user:
                     msg += ' Try running as user {0}.'.format(user)
                 else:
-                    msg += ' Please give {0} read permissions.'.format(user,
-                                                                       tpath)
+                    msg += ' Please give {0} read permissions.'.format(user)
 
             # We don't need to bail on config file permission errors
             # if the CLI
@@ -387,7 +404,7 @@ def check_max_open_files(opts):
         mof_s, mof_h = resource.getrlimit(resource.RLIMIT_NOFILE)
 
     accepted_keys_dir = os.path.join(opts.get('pki_dir'), 'minions')
-    accepted_count = sum(1 for _ in os.listdir(accepted_keys_dir))
+    accepted_count = len(os.listdir(accepted_keys_dir))
 
     log.debug(
         'This salt-master instance has accepted {0} minion keys.'.format(
@@ -462,3 +479,24 @@ def valid_id(opts, id_):
         return bool(clean_path(opts['pki_dir'], id_))
     except (AttributeError, KeyError) as e:
         return False
+
+
+def safe_py_code(code):
+    '''
+    Check a string to see if it has any potentially unsafe routines which
+    could be executed via python, this routine is used to improve the
+    safety of modules suct as virtualenv
+    '''
+    bads = (
+            'import',
+            ';',
+            'subprocess',
+            'eval',
+            'open',
+            'file',
+            'exec',
+            'input')
+    for bad in bads:
+        if code.count(bad):
+            return False
+    return True

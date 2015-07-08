@@ -4,16 +4,21 @@ Module for gathering and managing network information
 '''
 
 # Import python libs
+from __future__ import absolute_import
 import datetime
 import hashlib
 import logging
 import re
+import os
 import socket
 
 # Import salt libs
 import salt.utils
+import salt.utils.decorators as decorators
+import salt.utils.network
 from salt.exceptions import CommandExecutionError
 import salt.utils.validate.net
+from salt.ext.six.moves import range
 
 
 log = logging.getLogger(__name__)
@@ -30,7 +35,38 @@ def __virtual__():
     return True
 
 
-def ping(host):
+def wol(mac, bcast='255.255.255.255', destport=9):
+    '''
+    Send Wake On Lan packet to a host
+
+    CLI Example:
+
+    .. code-block:: bash
+
+        salt '*' network.wol 08-00-27-13-69-77
+        salt '*' network.wol 080027136977 255.255.255.255 7
+        salt '*' network.wol 08:00:27:13:69:77 255.255.255.255 7
+    '''
+    if len(mac) == 12:
+        pass
+    elif len(mac) == 17:
+        sep = mac[2]
+        mac = mac.replace(sep, '')
+    else:
+        raise ValueError('Invalid MAC address')
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+    dest = ('\\x' + mac[0:2]).decode('string_escape') + \
+           ('\\x' + mac[2:4]).decode('string_escape') + \
+           ('\\x' + mac[4:6]).decode('string_escape') + \
+           ('\\x' + mac[6:8]).decode('string_escape') + \
+           ('\\x' + mac[8:10]).decode('string_escape') + \
+           ('\\x' + mac[10:12]).decode('string_escape')
+    sock.sendto('\xff' * 6 + dest * 16, (bcast, int(destport)))
+    return True
+
+
+def ping(host, timeout=False, return_boolean=False):
     '''
     Performs a ping to a host
 
@@ -39,9 +75,33 @@ def ping(host):
     .. code-block:: bash
 
         salt '*' network.ping archlinux.org
+
+    .. versionadded:: 2015.5.0
+
+    Return a True or False instead of ping output.
+
+    .. code-block:: bash
+
+        salt '*' network.ping archlinux.org return_boolean=True
+
+    Set the time to wait for a response in seconds.
+
+    .. code-block:: bash
+
+        salt '*' network.ping archlinux.org timeout=3
     '''
-    cmd = 'ping -c 4 {0}'.format(salt.utils.network.sanitize_host(host))
-    return __salt__['cmd.run'](cmd)
+    if timeout:
+        cmd = 'ping -W {0} -c 4 {1}'.format(timeout, salt.utils.network.sanitize_host(host))
+    else:
+        cmd = 'ping -c 4 {0}'.format(salt.utils.network.sanitize_host(host))
+    if return_boolean:
+        ret = __salt__['cmd.run_all'](cmd)
+        if ret['retcode'] != 0:
+            return False
+        else:
+            return True
+    else:
+        return __salt__['cmd.run'](cmd)
 
 
 # FIXME: Does not work with: netstat 1.42 (2001-04-15) from net-tools
@@ -135,7 +195,7 @@ def _netinfo_freebsd_netbsd():
     out = __salt__['cmd.run'](
         'sockstat -46 {0} | tail -n+2'.format(
             '-n' if __grains__['kernel'] == 'NetBSD' else ''
-        )
+        ), python_shell=True
     )
     for line in out.splitlines():
         user, cmd, pid, _, proto, local_addr, remote_addr = line.split()
@@ -156,7 +216,7 @@ def _ppid():
     '''
     ret = {}
     cmd = 'ps -ax -o pid,ppid | tail -n+2'
-    out = __salt__['cmd.run'](cmd)
+    out = __salt__['cmd.run'](cmd, python_shell=True)
     for line in out.splitlines():
         pid, ppid = line.split()
         ret[pid] = ppid
@@ -171,7 +231,7 @@ def _netstat_bsd():
     if __grains__['kernel'] == 'NetBSD':
         for addr_family in ('inet', 'inet6'):
             cmd = 'netstat -f {0} -an | tail -n+3'.format(addr_family)
-            out = __salt__['cmd.run'](cmd)
+            out = __salt__['cmd.run'](cmd, python_shell=True)
             for line in out.splitlines():
                 comps = line.split()
                 entry = {
@@ -187,7 +247,7 @@ def _netstat_bsd():
     else:
         # Lookup TCP connections
         cmd = 'netstat -p tcp -an | tail -n+3'
-        out = __salt__['cmd.run'](cmd)
+        out = __salt__['cmd.run'](cmd, python_shell=True)
         for line in out.splitlines():
             comps = line.split()
             ret.append({
@@ -199,7 +259,7 @@ def _netstat_bsd():
                 'state': comps[5]})
         # Lookup UDP connections
         cmd = 'netstat -p udp -an | tail -n+3'
-        out = __salt__['cmd.run'](cmd)
+        out = __salt__['cmd.run'](cmd, python_shell=True)
         for line in out.splitlines():
             comps = line.split()
             ret.append({
@@ -226,17 +286,148 @@ def _netstat_bsd():
         except KeyError:
             continue
         # Get the pid-to-ppid mappings for this connection
-        conn_ppid = dict((x, y) for x, y in ppid.iteritems() if x in ptr)
+        conn_ppid = dict((x, y) for x, y in ppid.items() if x in ptr)
         try:
             # Master pid for this connection will be the pid whose ppid isn't
             # in the subset dict we created above
             master_pid = next(iter(
-                x for x, y in conn_ppid.iteritems() if y not in ptr
+                x for x, y in conn_ppid.items() if y not in ptr
             ))
         except StopIteration:
             continue
         ret[idx]['user'] = ptr[master_pid]['user']
         ret[idx]['program'] = '/'.join((master_pid, ptr[master_pid]['cmd']))
+    return ret
+
+
+def _netstat_route_linux():
+    '''
+    Return netstat routing information for Linux distros
+    '''
+    ret = []
+    cmd = 'netstat -A inet -rn | tail -n+3'
+    out = __salt__['cmd.run'](cmd, python_shell=True)
+    for line in out.splitlines():
+        comps = line.split()
+        ret.append({
+            'addr_family': 'inet',
+            'destination': comps[0],
+            'gateway': comps[1],
+            'netmask': comps[2],
+            'flags': comps[3],
+            'interface': comps[7]})
+    cmd = 'netstat -A inet6 -rn | tail -n+3'
+    out = __salt__['cmd.run'](cmd, python_shell=True)
+    for line in out.splitlines():
+        comps = line.split()
+        if len(comps) == 6:
+            ret.append({
+                'addr_family': 'inet6',
+                'destination': comps[0],
+                'gateway': comps[1],
+                'netmask': '',
+                'flags': comps[3],
+                'interface': comps[5]})
+        elif len(comps) == 7:
+            ret.append({
+                'addr_family': 'inet6',
+                'destination': comps[0],
+                'gateway': comps[1],
+                'netmask': '',
+                'flags': comps[3],
+                'interface': comps[6]})
+        else:
+            continue
+    return ret
+
+
+def _netstat_route_freebsd():
+    '''
+    Return netstat routing information for FreeBSD and OS X
+    '''
+    ret = []
+    cmd = 'netstat -f inet -rn | tail -n+5'
+    out = __salt__['cmd.run'](cmd, python_shell=True)
+    for line in out.splitlines():
+        comps = line.split()
+        ret.append({
+            'addr_family': 'inet',
+            'destination': comps[0],
+            'gateway': comps[1],
+            'netmask': comps[2],
+            'flags': comps[3],
+            'interface': comps[5]})
+    cmd = 'netstat -f inet6 -rn | tail -n+5'
+    out = __salt__['cmd.run'](cmd, python_shell=True)
+    for line in out.splitlines():
+        comps = line.split()
+        ret.append({
+            'addr_family': 'inet6',
+            'destination': comps[0],
+            'gateway': comps[1],
+            'netmask': '',
+            'flags': comps[2],
+            'interface': comps[3]})
+    return ret
+
+
+def _netstat_route_netbsd():
+    '''
+    Return netstat routing information for NetBSD
+    '''
+    ret = []
+    cmd = 'netstat -f inet -rn | tail -n+5'
+    out = __salt__['cmd.run'](cmd, python_shell=True)
+    for line in out.splitlines():
+        comps = line.split()
+        ret.append({
+            'addr_family': 'inet',
+            'destination': comps[0],
+            'gateway': comps[1],
+            'netmask': '',
+            'flags': comps[3],
+            'interface': comps[6]})
+    cmd = 'netstat -f inet6 -rn | tail -n+5'
+    out = __salt__['cmd.run'](cmd, python_shell=True)
+    for line in out.splitlines():
+        comps = line.split()
+        ret.append({
+            'addr_family': 'inet6',
+            'destination': comps[0],
+            'gateway': comps[1],
+            'netmask': '',
+            'flags': comps[3],
+            'interface': comps[6]})
+    return ret
+
+
+def _netstat_route_openbsd():
+    '''
+    Return netstat routing information for OpenBSD
+    '''
+    ret = []
+    cmd = 'netstat -f inet -rn | tail -n+5'
+    out = __salt__['cmd.run'](cmd, python_shell=True)
+    for line in out.splitlines():
+        comps = line.split()
+        ret.append({
+            'addr_family': 'inet',
+            'destination': comps[0],
+            'gateway': comps[1],
+            'netmask': '',
+            'flags': comps[2],
+            'interface': comps[7]})
+    cmd = 'netstat -f inet6 -rn | tail -n+5'
+    out = __salt__['cmd.run'](cmd, python_shell=True)
+    for line in out.splitlines():
+        comps = line.split()
+        ret.append({
+            'addr_family': 'inet6',
+            'destination': comps[0],
+            'gateway': comps[1],
+            'netmask': '',
+            'flags': comps[2],
+            'interface': comps[7]})
     return ret
 
 
@@ -400,6 +591,7 @@ def dig(host):
     return __salt__['cmd.run'](cmd)
 
 
+@decorators.which('arp')
 def arp():
     '''
     Return the arp table from the minion
@@ -416,7 +608,12 @@ def arp():
         comps = line.split()
         if len(comps) < 4:
             continue
-        ret[comps[3]] = comps[1].strip('(').strip(')')
+        if not __grains__['kernel'] == 'OpenBSD':
+            ret[comps[3]] = comps[1].strip('(').strip(')')
+        else:
+            if comps[0] == 'Host' or comps[1] == '(incomplete)':
+                continue
+            ret[comps[1]] = comps[0]
     return ret
 
 
@@ -453,6 +650,8 @@ def interface(iface):
     '''
     Return the inet address for a given interface
 
+    .. versionadded:: 2014.7
+
     CLI Example:
 
     .. code-block:: bash
@@ -465,6 +664,8 @@ def interface(iface):
 def interface_ip(iface):
     '''
     Return the inet address for a given interface
+
+    .. versionadded:: 2014.7
 
     CLI Example:
 
@@ -499,6 +700,19 @@ def in_subnet(cidr):
         salt '*' network.in_subnet 10.0.0.0/16
     '''
     return salt.utils.network.in_subnet(cidr)
+
+
+def ip_in_subnet(ip_addr, cidr):
+    '''
+    Returns True if given IP is within specified subnet, otherwise False.
+
+    CLI Example:
+
+    .. code-block:: bash
+
+        salt '*' network.ip_in_subnet 172.17.0.4 172.16.0.0/12
+    '''
+    return salt.utils.network.ip_in_subnet(ip_addr, cidr)
 
 
 def ip_addrs(interface=None, include_loopback=False, cidr=None):
@@ -554,8 +768,6 @@ def get_hostname():
         salt '*' network.get_hostname
     '''
 
-    #cmd='hostname  -f'
-    #return __salt__['cmd.run'](cmd)
     from socket import gethostname
     return gethostname()
 
@@ -609,6 +821,9 @@ def mod_hostname(hostname):
     elif __grains__['os_family'] == 'Debian':
         with salt.utils.fopen('/etc/hostname', 'w') as fh:
             fh.write(hostname + '\n')
+    elif __grains__['os_family'] == 'OpenBSD':
+        with salt.utils.fopen('/etc/myname', 'w') as fh:
+            fh.write(hostname + '\n')
 
     return True
 
@@ -617,6 +832,8 @@ def connect(host, port=None, **kwargs):
     '''
     Test connectivity to a host using a particular
     port from the minion.
+
+    .. versionadded:: 2014.7
 
     CLI Example:
 
@@ -691,7 +908,7 @@ def connect(host, port=None, **kwargs):
         else:
             s.connect(_address)
             s.shutdown(2)
-    except Exception, e:
+    except Exception as e:
         ret['result'] = False
         try:
             errno, errtxt = e
@@ -704,3 +921,233 @@ def connect(host, port=None, **kwargs):
     ret['result'] = True
     ret['comment'] = 'Successfully connected to {0} ({1}) on {2} port {3}'.format(host, _address[0], proto, port)
     return ret
+
+
+def is_private(ip_addr):
+    '''
+    Check if the given IP address is a private address
+
+    .. versionadded:: 2014.7.0
+
+    CLI Example:
+
+    .. code-block:: bash
+
+        salt '*' network.is_private 10.0.0.3
+    '''
+    return salt.utils.network.IPv4Address(ip_addr).is_private
+
+
+def is_loopback(ip_addr):
+    '''
+    Check if the given IP address is a loopback address
+
+    .. versionadded:: 2014.7.0
+
+    CLI Example:
+
+    .. code-block:: bash
+
+        salt '*' network.is_loopback 127.0.0.1
+    '''
+    return salt.utils.network.IPv4Address(ip_addr).is_loopback
+
+
+def reverse_ip(ip_addr):
+    '''
+    Returns the reversed IP address
+
+    CLI Example:
+
+    .. code-block:: bash
+
+        salt '*' network.reverse_ip 172.17.0.4
+    '''
+    return salt.utils.network.IPv4Address(ip_addr).reverse_pointer
+
+
+def _get_bufsize_linux(iface):
+    '''
+    Return network interface buffer information using ethtool
+    '''
+    ret = {'result': False}
+
+    cmd = '/sbin/ethtool -g {0}'.format(iface)
+    out = __salt__['cmd.run'](cmd)
+    pat = re.compile(r'^(.+):\s+(\d+)$')
+    suffix = 'max-'
+    for line in out.splitlines():
+        res = pat.match(line)
+        if res:
+            ret[res.group(1).lower().replace(' ', '-') + suffix] = int(res.group(2))
+            ret['result'] = True
+        elif line.endswith('maximums:'):
+            suffix = '-max'
+        elif line.endswith('settings:'):
+            suffix = ''
+    if not ret['result']:
+        parts = out.split()
+        # remove shell cmd prefix from msg
+        if parts[0].endswith('sh:'):
+            out = ' '.join(parts[1:])
+        ret['comment'] = out
+    return ret
+
+
+def get_bufsize(iface):
+    '''
+    Return network buffer sizes as a dict
+
+    CLI Example:
+
+    .. code-block:: bash
+
+        salt '*' network.getbufsize
+    '''
+    if __grains__['kernel'] == 'Linux':
+        if os.path.exists('/sbin/ethtool'):
+            return _get_bufsize_linux(iface)
+
+    return {}
+
+
+def _mod_bufsize_linux(iface, *args, **kwargs):
+    '''
+    Modify network interface buffer sizes using ethtool
+    '''
+    ret = {'result': False,
+           'comment': 'Requires rx=<val> tx==<val> rx-mini=<val> and/or rx-jumbo=<val>'}
+    cmd = '/sbin/ethtool -G ' + iface
+    if not kwargs:
+        return ret
+    if args:
+        ret['comment'] = 'Unknown arguments: ' + ' '.join([str(item) for item in args])
+        return ret
+    eargs = ''
+    for kw in ['rx', 'tx', 'rx-mini', 'rx-jumbo']:
+        value = kwargs.get(kw)
+        if value is not None:
+            eargs += ' ' + kw + ' ' + str(value)
+    if not eargs:
+        return ret
+    cmd += eargs
+    out = __salt__['cmd.run'](cmd)
+    if out:
+        ret['comment'] = out
+    else:
+        ret['comment'] = eargs.strip()
+        ret['result'] = True
+    return ret
+
+
+def mod_bufsize(iface, *args, **kwargs):
+    '''
+    Modify network interface buffers (currently linux only)
+
+    CLI Example:
+
+    .. code-block:: bash
+
+        salt '*' network.getBuffers
+    '''
+    if __grains__['kernel'] == 'Linux':
+        if os.path.exists('/sbin/ethtool'):
+            return _mod_bufsize_linux(iface, *args, **kwargs)
+
+    return False
+
+
+def routes(family=None):
+    '''
+    Return currently configured routes from routing table
+
+    CLI Example:
+
+    .. code-block:: bash
+
+        salt '*' network.routes
+    '''
+    if family != 'inet' and family != 'inet6' and family is not None:
+        raise CommandExecutionError('Invalid address family {0}'.format(family))
+
+    if __grains__['kernel'] == 'Linux':
+        routes_ = _netstat_route_linux()
+    elif __grains__['os'] in ['FreeBSD', 'MacOS', 'Darwin']:
+        routes_ = _netstat_route_freebsd()
+    elif __grains__['os'] in ['NetBSD']:
+        routes_ = _netstat_route_netbsd()
+    elif __grains__['os'] in ['OpenBSD']:
+        routes_ = _netstat_route_openbsd()
+    else:
+        raise CommandExecutionError('Not yet supported on this platform')
+
+    if not family:
+        return routes_
+    else:
+        ret = [route for route in routes_ if route['addr_family'] == family]
+        return ret
+
+
+def default_route(family=None):
+    '''
+    Return default route(s) from routing table
+
+    CLI Example:
+
+    .. code-block:: bash
+
+        salt '*' network.default_route
+    '''
+
+    if family != 'inet' and family != 'inet6' and family is not None:
+        raise CommandExecutionError('Invalid address family {0}'.format(family))
+
+    _routes = routes()
+    default_route = {}
+    if __grains__['kernel'] == 'Linux':
+        default_route['inet'] = ['0.0.0.0', 'default']
+        default_route['inet6'] = ['::/0', 'default']
+    elif __grains__['os'] in ['FreeBSD', 'NetBSD', 'OpenBSD', 'MacOS', 'Darwin']:
+        default_route['inet'] = ['default']
+        default_route['inet6'] = ['default']
+    else:
+        raise CommandExecutionError('Not yet supported on this platform')
+
+    ret = []
+    for route in _routes:
+        if family:
+            if route['destination'] in default_route[family]:
+                ret.append(route)
+        else:
+            if route['destination'] in default_route['inet'] or \
+               route['destination'] in default_route['inet6']:
+                ret.append(route)
+
+    return ret
+
+
+def get_route(ip):
+    '''
+    Return routing information for given destination ip
+
+    .. versionadded:: 2015.5.3
+
+    CLI Example::
+
+        salt '*' network.get_route 10.10.10.10
+    '''
+
+    if __grains__['kernel'] == 'Linux':
+        cmd = 'ip route get {0}'.format(ip)
+        out = __salt__['cmd.run'](cmd, python_shell=True)
+        regexp = re.compile(r'(via\s+(?P<gateway>[\w\.:]+))?\s+dev\s+(?P<interface>[\w\.\:]+)\s+.*src\s+(?P<source>[\w\.:]+)')
+        m = regexp.search(out.splitlines()[0])
+        ret = {
+            'destination': ip,
+            'gateway': m.group('gateway'),
+            'interface': m.group('interface'),
+            'source': m.group('source')}
+
+        return ret
+    else:
+        raise CommandExecutionError('Not yet supported on this platform')

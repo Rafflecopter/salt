@@ -8,6 +8,8 @@ service. To use Salt Cloud with GoGrid log into the GoGrid web interface and
 create an api key. Do this by clicking on "My Account" and then going to the
 API Keys tab.
 
+:depends: libcloud >= 0.13.2
+
 Set up the cloud configuration at ``/etc/salt/cloud.providers`` or
 ``/etc/salt/cloud.providers.d/gogrid.conf``:
 
@@ -21,7 +23,16 @@ Set up the cloud configuration at ``/etc/salt/cloud.providers`` or
 
       provider: gogrid
 
+.. note::
+
+    A Note about using Map files with GoGrid:
+
+    Due to limitations in the GoGrid API, instances cannot be provisioned in parallel
+    with the GoGrid driver. Map files will work with GoGrid, but the ``-P``
+    argument should not be used on maps referencing GoGrid instances.
+
 '''
+from __future__ import absolute_import
 
 # The import section is mostly libcloud boilerplate
 
@@ -36,7 +47,7 @@ from salt.cloud.libcloudfuncs import *   # pylint: disable=W0614,W0401
 # Import salt cloud libs
 import salt.config as config
 from salt.utils import namespaced_function
-from salt.cloud.exceptions import SaltCloudSystemExit
+from salt.exceptions import SaltCloudSystemExit
 
 # Get logging started
 log = logging.getLogger(__name__)
@@ -48,12 +59,16 @@ get_size = namespaced_function(get_size, globals())
 get_image = namespaced_function(get_image, globals())
 avail_images = namespaced_function(avail_images, globals())
 avail_sizes = namespaced_function(avail_sizes, globals())
+avail_locations = namespaced_function(avail_locations, globals())
 script = namespaced_function(script, globals())
 destroy = namespaced_function(destroy, globals())
 list_nodes = namespaced_function(list_nodes, globals())
 list_nodes_full = namespaced_function(list_nodes_full, globals())
 list_nodes_select = namespaced_function(list_nodes_select, globals())
 show_instance = namespaced_function(show_instance, globals())
+reboot = namespaced_function(reboot, globals())
+get_node = namespaced_function(get_node, globals())
+get_salt_interface = namespaced_function(get_salt_interface, globals())
 
 
 # Only load in this module is the GOGRID configurations are in place
@@ -98,13 +113,6 @@ def create(vm_):
     '''
     Create a single VM from a data dict
     '''
-    deploy = config.get_cloud_config_value('deploy', vm_, __opts__)
-    if deploy is True and salt.utils.which('sshpass') is None:
-        raise SaltCloudSystemExit(
-            'Cannot deploy salt in a VM if the \'sshpass\' binary is not '
-            'present on the system.'
-        )
-
     salt.utils.cloud.fire_event(
         'event',
         'starting create',
@@ -145,7 +153,7 @@ def create(vm_):
                 vm_['name']
             ),
             # Show the traceback if the debug logging level is enabled
-            exc_info=log.isEnabledFor(logging.DEBUG)
+            exc_info_on_loglevel=logging.DEBUG
         )
         return False
 
@@ -242,7 +250,6 @@ def create(vm_):
             transport=__opts__['transport']
         )
 
-        deployed = False
         if win_installer:
             deployed = salt.utils.cloud.deploy_windows(**deploy_kwargs)
         else:

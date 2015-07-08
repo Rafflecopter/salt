@@ -6,6 +6,7 @@ import sys
 import shutil
 import tempfile
 import textwrap
+import copy
 from cStringIO import StringIO
 
 # Import Salt Testing libs
@@ -18,6 +19,7 @@ ensure_in_syspath('../')
 import integration
 import salt.loader
 import salt.config
+import salt.utils
 from salt.state import HighState
 from salt.utils.pydsl import PyDslError
 
@@ -28,6 +30,7 @@ OPTS['state_events'] = False
 OPTS['id'] = 'whatever'
 OPTS['file_client'] = 'local'
 OPTS['file_roots'] = dict(base=['/tmp'])
+OPTS['cachedir'] = 'cachedir'
 OPTS['test'] = False
 OPTS['grains'] = salt.loader.grains(OPTS)
 
@@ -290,7 +293,7 @@ class PyDSLRendererTestCase(TestCase):
                 '''.format(output, output, output)))
 
             state_highstate({'base': ['aaa']}, dirpath)
-            with open(output, 'r') as f:
+            with salt.utils.fopen(output, 'r') as f:
                 self.assertEqual(''.join(f.read().split()), "XYZABCDEF")
 
         finally:
@@ -383,7 +386,7 @@ class PyDSLRendererTestCase(TestCase):
                 hello blue 3
                 ''')
 
-            with open(output, 'r') as f:
+            with salt.utils.fopen(output, 'r') as f:
                 self.assertEqual(sorted(f.read()), sorted(expected))
 
         finally:
@@ -416,10 +419,10 @@ class PyDSLRendererTestCase(TestCase):
                 A()
                 '''.format(dirpath, dirpath, dirpath, dirpath)))
             state_highstate({'base': ['aaa']}, dirpath)
-            with open(os.path.join(dirpath, 'yyy.txt'), 'r') as f:
+            with salt.utils.fopen(os.path.join(dirpath, 'yyy.txt'), 'r') as f:
 
                 self.assertEqual(f.read(), 'hehe\nhoho\n')
-            with open(os.path.join(dirpath, 'xxx.txt'), 'r') as f:
+            with salt.utils.fopen(os.path.join(dirpath, 'xxx.txt'), 'r') as f:
                 self.assertEqual(f.read(), 'hehe\n')
         finally:
             shutil.rmtree(dirpath, ignore_errors=True)
@@ -492,13 +495,14 @@ class PyDSLRendererTestCase(TestCase):
 
 
 def write_to(fpath, content):
-    with open(fpath, 'w') as f:
+    with salt.utils.fopen(fpath, 'w') as f:
         f.write(content)
 
 
 def state_highstate(state, dirpath):
-    OPTS['file_roots'] = dict(base=[dirpath])
-    HIGHSTATE = HighState(OPTS)
+    opts = copy.copy(OPTS)
+    opts['file_roots'] = dict(base=[dirpath])
+    HIGHSTATE = HighState(opts)
     HIGHSTATE.push_active()
     try:
         high, errors = HIGHSTATE.render_highstate(state)

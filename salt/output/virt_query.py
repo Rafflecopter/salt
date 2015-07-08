@@ -13,9 +13,9 @@ def output(data):
     Display output for the salt-run virt.query function
     '''
     out = ''
-    for id_ in data:
+    for id_ in data['data']:
         out += '{0}\n'.format(id_)
-        for vm_ in data[id_]['vm_info']:
+        for vm_ in data['data'][id_]['vm_info']:
             out += '  {0}\n'.format(vm_)
             vm_data = data[id_]['vm_info'][vm_]
             if 'cpu' in vm_data:
@@ -38,6 +38,6 @@ def output(data):
             if 'nics' in vm_data:
                 for mac in vm_data['nics']:
                     out += '    Nic - {0}:\n'.format(mac)
-                    out += '      Source: {0}\n'.format(vm_data['nics'][mac]['source'][vm_data['nics'][mac]['source'].keys()[0]])
+                    out += '      Source: {0}\n'.format(vm_data['nics'][mac]['source'][next(vm_data['nics'][mac]['source'].iterkeys())])
                     out += '      Type: {0}\n'.format(vm_data['nics'][mac]['type'])
     return out

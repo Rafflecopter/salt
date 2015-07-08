@@ -2,7 +2,7 @@
 '''
 Support for htpasswd module
 
-.. versionadded:: Helium
+.. versionadded:: 2014.7.0
 
 .. code-block:: yaml
 
@@ -14,6 +14,7 @@ Support for htpasswd module
         - force: true
 
 '''
+from __future__ import absolute_import
 import salt.utils
 
 

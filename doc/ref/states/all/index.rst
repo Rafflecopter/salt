@@ -16,26 +16,33 @@ Full list of builtin state modules
     apache_module
     apt
     archive
+    artifactory
     at
     augeas
     aws_sqs
     blockdev
     boto_asg
+    boto_cloudwatch_alarm
+    boto_dynamodb
     boto_elasticache
     boto_elb
     boto_iam_role
     boto_lc
     boto_route53
     boto_secgroup
+    boto_sns
     boto_sqs
+    chef
     cloud
     cmd
     composer
     cron
+    cyg
     ddns
     debconfmod
     disk
     dockerio
+    drac
     environ
     eselect
     event
@@ -44,22 +51,28 @@ Full list of builtin state modules
     git
     glusterfs
     gnomedesktop
+    grafana
     grains
     group
     hg
+    hipchat
     host
     htpasswd
+    http
     incron
     influxdb_database
     influxdb_user
     ini_manage
+    ipmi
     ipset
     iptables
+    jboss7
     keyboard
     keystone
     kmod
     layman
     libvirt
+    linux_acl
     locale
     lvm
     lvs_server
@@ -94,9 +107,12 @@ Full list of builtin state modules
     postgres_database
     postgres_extension
     postgres_group
+    postgres_schema
     postgres_user
     powerpath
     process
+    pyenv
+    pyrax_queues
     quota
     rabbitmq_cluster
     rabbitmq_plugin
@@ -109,10 +125,13 @@ Full list of builtin state modules
     reg
     rvm
     saltmod
+    schedule
     selinux
     serverdensity_device
     service
+    slack
     smtp
+    splunk_search
     ssh_auth
     ssh_known_hosts
     stateconf
@@ -121,10 +140,13 @@ Full list of builtin state modules
     svn
     sysctl
     syslog_ng
+    sysrc
     test
     timezone
+    tls
     tomcat
     user
+    vbox_guest
     virtualenv_mod
     win_dns_client
     win_firewall
@@ -132,5 +154,8 @@ Full list of builtin state modules
     win_path
     win_servermanager
     win_system
+    win_update
+    winrepo
     xmpp
     zcbuildout
+    zk_concurrency

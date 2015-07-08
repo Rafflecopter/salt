@@ -2,6 +2,7 @@
 '''
 Create ssh executor system
 '''
+from __future__ import absolute_import
 # Import python libs
 import os
 import tarfile
@@ -57,8 +58,8 @@ class SSHHighState(salt.state.BaseHighState):
     '''
     stack = []
 
-    def __init__(self, opts, pillar=None, wrapper=None):
-        self.client = salt.fileclient.LocalClient(opts)
+    def __init__(self, opts, pillar=None, wrapper=None, fsclient=None):
+        self.client = fsclient
         salt.state.BaseHighState.__init__(self, opts)
         self.state = SSHState(opts, pillar, wrapper)
         self.matcher = salt.minion.Matcher(self.opts)
@@ -96,35 +97,35 @@ def lowstate_file_refs(chunks, extras=''):
             for env in refs:
                 for x in extra_refs:
                     refs[env].append([x])
-
     return refs
 
 
-def salt_refs(data):
+def salt_refs(data, ret=None):
     '''
     Pull salt file references out of the states
     '''
     proto = 'salt://'
-    ret = []
+    if ret is None:
+        ret = []
     if isinstance(data, str):
-        if data.startswith(proto):
-            return [data]
+        if data.startswith(proto) and data not in ret:
+            ret.append(data)
     if isinstance(data, list):
         for comp in data:
-            if isinstance(comp, str):
-                if comp.startswith(proto):
-                    ret.append(comp)
+            salt_refs(comp, ret)
+    if isinstance(data, dict):
+        for comp in data:
+            salt_refs(data[comp], ret)
     return ret
 
 
-def prep_trans_tar(opts, chunks, file_refs, pillar=None):
+def prep_trans_tar(file_client, chunks, file_refs, pillar=None):
     '''
     Generate the execution package from the saltenv file refs and a low state
     data structure
     '''
     gendir = tempfile.mkdtemp()
     trans_tar = salt.utils.mkstemp()
-    file_client = salt.fileclient.LocalClient(opts)
     lowfn = os.path.join(gendir, 'lowstate.json')
     pillarfn = os.path.join(gendir, 'pillar.json')
     sync_refs = [
@@ -136,10 +137,10 @@ def prep_trans_tar(opts, chunks, file_refs, pillar=None):
             ['salt://_outputters'],
             ['salt://_utils'],
             ]
-    with open(lowfn, 'w+') as fp_:
+    with salt.utils.fopen(lowfn, 'w+') as fp_:
         fp_.write(json.dumps(chunks))
     if pillar:
-        with open(pillarfn, 'w+') as fp_:
+        with salt.utils.fopen(pillarfn, 'w+') as fp_:
             fp_.write(json.dumps(pillar))
     for saltenv in file_refs:
         file_refs[saltenv].extend(sync_refs)
@@ -156,20 +157,23 @@ def prep_trans_tar(opts, chunks, file_refs, pillar=None):
                     if not os.path.isdir(tgt_dir):
                         os.makedirs(tgt_dir)
                     shutil.copy(path, tgt)
-                    break
+                    continue
                 files = file_client.cache_dir(name, saltenv)
                 if files:
                     for filename in files:
+                        fn = filename[filename.find(short) + len(short):]
+                        if fn.startswith('/'):
+                            fn = fn.strip('/')
                         tgt = os.path.join(
                                 env_root,
                                 short,
-                                filename[filename.find(short) + len(short) + 1:],
+                                fn,
                                 )
                         tgt_dir = os.path.dirname(tgt)
                         if not os.path.isdir(tgt_dir):
                             os.makedirs(tgt_dir)
                         shutil.copy(filename, tgt)
-                    break
+                    continue
     cwd = os.getcwd()
     os.chdir(gendir)
     with closing(tarfile.open(trans_tar, 'w:gz')) as tfp:

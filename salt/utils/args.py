@@ -2,12 +2,15 @@
 '''
 Functions used for CLI argument handling
 '''
+from __future__ import absolute_import
 
 # Import python libs
 import re
+import inspect
 
 # Import salt libs
-from salt._compat import string_types, integer_types
+from salt.ext.six import string_types, integer_types
+import salt.ext.six as six
 
 #KWARG_REGEX = re.compile(r'^([^\d\W][\w.-]*)=(?!=)(.*)$', re.UNICODE)  # python 3
 KWARG_REGEX = re.compile(r'^([^\d\W][\w.-]*)=(?!=)(.*)$')
@@ -17,12 +20,18 @@ def condition_input(args, kwargs):
     '''
     Return a single arg structure for the publisher to safely use
     '''
+    ret = []
+    for arg in args:
+        if isinstance(arg, long):
+            ret.append(str(arg))
+        else:
+            ret.append(arg)
     if isinstance(kwargs, dict) and kwargs:
         kw_ = {'__kwarg__': True}
-        for key, val in kwargs.iteritems():
+        for key, val in six.iteritems(kwargs):
             kw_[key] = val
-        return list(args) + [kw_]
-    return args
+        return ret + [kw_]
+    return ret
 
 
 def parse_input(args, condition=True):
@@ -35,7 +44,7 @@ def parse_input(args, condition=True):
     _args = []
     _kwargs = {}
     for arg in args:
-        if isinstance(arg, string_types) and r'\n' not in arg:
+        if isinstance(arg, string_types):
             arg_name, arg_value = parse_kwarg(arg)
             if arg_name:
                 _kwargs[arg_name] = yamlify_arg(arg_value)
@@ -89,14 +98,20 @@ def yamlify_arg(arg):
         # True
         return arg
 
+    elif '_' in arg and all([x in '0123456789_' for x in arg.strip()]):
+        return arg
+
     try:
         # Explicit late import to avoid circular import. DO NOT MOVE THIS.
         import salt.utils.yamlloader as yamlloader
         original_arg = arg
         if '#' in arg:
-            # Don't yamlify this argument or the '#' and everything after
-            # it will be interpreted as a comment.
-            return arg
+            # Only yamlify if it parses into a non-string type, to prevent
+            # loss of content due to # as comment character
+            parsed_arg = yamlloader.load(arg, Loader=yamlloader.SaltYamlSafeLoader)
+            if isinstance(parsed_arg, string_types):
+                return arg
+            return parsed_arg
         if arg == 'None':
             arg = None
         else:
@@ -127,3 +142,24 @@ def yamlify_arg(arg):
     except Exception:
         # In case anything goes wrong...
         return original_arg
+
+
+def get_function_argspec(func):
+    '''
+    A small wrapper around getargspec that also supports callable classes
+    '''
+    if not callable(func):
+        raise TypeError('{0} is not a callable'.format(func))
+
+    if inspect.isfunction(func):
+        aspec = inspect.getargspec(func)
+    elif inspect.ismethod(func):
+        aspec = inspect.getargspec(func)
+        del aspec.args[0]  # self
+    elif isinstance(func, object):
+        aspec = inspect.getargspec(func.__call__)
+        del aspec.args[0]  # self
+    else:
+        raise TypeError('Cannot inspect argument list for {0!r}'.format(func))
+
+    return aspec

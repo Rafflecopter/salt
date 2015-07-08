@@ -1,21 +1,30 @@
-==================================
-Getting Started With Digital Ocean
-==================================
+=================================
+Getting Started With DigitalOcean
+=================================
 
-Digital Ocean is a public cloud provider that specializes in Linux instances.
-
-
-Dependencies
-============
-This driver requires the Python ``requests`` library to be installed.
+DigitalOcean is a public cloud provider that specializes in Linux instances.
 
 
 Configuration
 =============
-Using Salt for Digital Ocean requires a client_key, an api_key, an ssh_key_file,
-and an ssh_key_name. The client_key and api_key can be found in the Digital
-Ocean web interface, in the "My Settings" section, under the API Access tab.
-The ssh_key_name can be found under the "SSH Keys" section. 
+Starting in Salt 2015.5.0, a new DigitalOcean driver was added to Salt Cloud to support
+DigitalOcean's new API, APIv2. The original driver, referred to ``digital_ocean`` will
+be supported throughout the 2015.5.x releases of Salt, but will then be removed in Salt
+Beryllium in favor of the APIv2 driver, ``digital_ocean_v2``. The following documentation
+is relevant to the new driver, ``digital_ocean_v2``. To see documentation related to the
+original ``digital_ocean`` driver, please see the
+:mod:`DigitalOcean Salt Cloud Driver <salt.cloud.clouds.digital_ocean>`
+
+.. note::
+
+    When Salt Beryllium is released, the original ``digital_ocean`` driver will no longer
+    be supported and the ``digital_ocean_v2`` driver will become the ``digital_ocean``
+    driver.
+
+Using Salt for DigitalOcean requires a ``personal_access_token``, an ``ssh_key_file``,
+and at least one SSH key name in ``ssh_key_names``. More can be added by separating each key
+with a comma. The ``personal_access_token`` can be found in the DigitalOcean web interface
+in the "Apps & API" section. The SSH key name can be found under the "SSH Keys" section.
 
 .. code-block:: yaml
 
@@ -24,10 +33,9 @@ The ssh_key_name can be found under the "SSH Keys" section.
 
     my-digitalocean-config:
       provider: digital_ocean
-      client_key: wFGEwgregeqw3435gDger
-      api_key: GDE43t43REGTrkilg43934t34qT43t4dgegerGEgg
+      personal_access_token: xxx
       ssh_key_file: /path/to/ssh/key/file
-      ssh_key_name: my-key-name
+      ssh_key_names: my-key-name,my-key-name-2
       location: New York 1
 
 
@@ -48,6 +56,31 @@ Set up an initial profile at ``/etc/salt/cloud.profiles`` or in the
         location: New York 1
         private_networking: True
         backups_enabled: True
+        ipv6: True
+
+Locations can be obtained using the ``--list-locations`` option for the ``salt-cloud``
+command:
+
+.. code-block:: bash
+
+    # salt-cloud --list-locations my-digitalocean-config
+    my-digitalocean-config:
+        ----------
+        digital_ocean:
+            ----------
+            Amsterdam 1:
+                ----------
+                available:
+                    False
+                features:
+                    [u'backups']
+                name:
+                    Amsterdam 1
+                sizes:
+                    []
+                slug:
+                    ams1
+    ...SNIP...
 
 Sizes can be obtained using the ``--list-sizes`` option for the ``salt-cloud``
 command:
@@ -114,4 +147,11 @@ command:
 
 .. note::
 
-    Additional documentation is available from `Digital Ocean <https://www.digitalocean.com/community/articles/automated-provisioning-of-digitalocean-cloud-servers-with-salt-cloud-on-ubuntu-12-04>`_.
+    If your domain's DNS is managed with DigitalOcean, you can automatically
+    create A-records for newly created droplets. Use ``create_dns_record: True``
+    in your config to enable this. Add ``delete_dns_record: True`` to also
+    delete records when a droplet is destroyed.
+
+.. note::
+
+    Additional documentation is available from `DigitalOcean <https://www.digitalocean.com/community/articles/automated-provisioning-of-digitalocean-cloud-servers-with-salt-cloud-on-ubuntu-12-04>`_.

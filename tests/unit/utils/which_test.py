@@ -37,7 +37,7 @@ class TestWhich(integration.TestCase):
 
     # The mock patch bellow, since we're not providing the return value, we
     # will be able to tweak it within the test case. The testcase MUST accept
-    # an arguemnt which is the MagicMock'ed object
+    # an argument which is the MagicMock'ed object
     @patch('os.access')
     def test_existing_binary_in_windows(self, osaccess):
         # We define the side_effect attribute on the mocked object in order to
@@ -56,11 +56,12 @@ class TestWhich(integration.TestCase):
         with patch.dict(os.environ, {'PATH': '/bin'}):
             # Let's also patch is_windows to return True
             with patch('salt.utils.is_windows', lambda: True):
-                self.assertEqual(
-                    salt.utils.which('this-binary-exists-under-windows'),
-                    # The returned path should return the .exe suffix
-                    '/bin/this-binary-exists-under-windows.EXE'
-                )
+                with patch('os.path.isfile', lambda x: True):
+                    self.assertEqual(
+                        salt.utils.which('this-binary-exists-under-windows'),
+                        # The returned path should return the .exe suffix
+                        '/bin/this-binary-exists-under-windows.EXE'
+                    )
 
     @patch('os.access')
     def test_missing_binary_in_windows(self, osaccess):
@@ -86,7 +87,7 @@ class TestWhich(integration.TestCase):
 
     # The mock patch bellow, since we're not providing the return value, we
     # will be able to tweak it within the test case. The testcase MUST accept
-    # an arguemnt which is the MagicMock'ed object
+    # an argument which is the MagicMock'ed object
     @patch('os.access')
     def test_existing_binary_in_windows_pathext(self, osaccess):
         # We define the side_effect attribute on the mocked object in order to
@@ -110,11 +111,12 @@ class TestWhich(integration.TestCase):
                                      '.VBE;.JS;.JSE;.WSF;.WSH;.MSC;.PY'}):
             # Let's also patch is_windows to return True
             with patch('salt.utils.is_windows', lambda: True):
-                self.assertEqual(
-                    salt.utils.which('this-binary-exists-under-windows'),
-                    # The returned path should return the .exe suffix
-                    '/bin/this-binary-exists-under-windows.CMD'
-                )
+                with patch('os.path.isfile', lambda x: True):
+                    self.assertEqual(
+                        salt.utils.which('this-binary-exists-under-windows'),
+                        # The returned path should return the .exe suffix
+                        '/bin/this-binary-exists-under-windows.CMD'
+                    )
 
 
 if __name__ == '__main__':

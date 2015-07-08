@@ -1,7 +1,6 @@
 # -*- coding: utf-8 -*-
 '''
-Management of Dockers
-=====================
+Management of Docker Containers
 
 .. versionadded:: 2014.1.0
 
@@ -25,12 +24,12 @@ Installation Prerequisites
   path that is running salt. Its version should support `Docker Remote API
   v1.12 <http://docs.docker.io/en/latest/reference/api/docker_remote_api_v1.12>`_.
 
-  Currently, ``docker-py 0.3.2`` is known to support `Docker Remote API v1.12
+  Currently, ``docker-py 0.5.0`` is known to support `Docker Remote API v1.12
   <http://docs.docker.io/en/latest/reference/api/docker_remote_api_v1.12>`_
 
   .. code-block:: bash
 
-      pip install docker-py==0.3.2
+      pip install docker-py==0.5.0
 
 Prerequisite Pillar Configuration for Authentication
 ----------------------------------------------------
@@ -53,7 +52,7 @@ Prerequisite Pillar Configuration for Authentication
   .. code-block:: yaml
 
       docker-registries:
-          https://index.docker.io/v1:
+          https://index.docker.io/v1/:
               email: foo@foo.com
               password: s3cr3t
               username: foo
@@ -64,13 +63,13 @@ Prerequisite Pillar Configuration for Authentication
   .. code-block:: yaml
 
       ac-docker-registries:
-          https://index.bar.io/v1:
+          https://index.bar.io/v1/:
               email: foo@foo.com
               password: s3cr3t
               username: foo
 
       ab-docker-registries:
-          https://index.foo.io/v1:
+          https://index.foo.io/v1/:
               email: foo@foo.com
               password: s3cr3t
               username: foo
@@ -80,11 +79,11 @@ Prerequisite Pillar Configuration for Authentication
   .. code-block:: yaml
 
       docker-registries:
-          https://index.bar.io/v1:
+          https://index.bar.io/v1/:
               email: foo@foo.com
               password: s3cr3t
               username: foo
-          https://index.foo.io/v1:
+          https://index.foo.io/v1/:
               email: foo@foo.com
               password: s3cr3t
               username: foo
@@ -107,6 +106,8 @@ _______
     - :py:func:`import_image<salt.modules.dockerio.import_image>`
     - :py:func:`build<salt.modules.dockerio.build>`
     - :py:func:`tag<salt.modules.dockerio.tag>`
+    - :py:func:`save<salt.modules.dockerio.save>`
+    - :py:func:`load<salt.modules.dockerio.load>`
 - Container Management
     - :py:func:`start<salt.modules.dockerio.start>`
     - :py:func:`stop<salt.modules.dockerio.stop>`
@@ -145,6 +146,9 @@ These are the available methods:
 - :py:func:`script_retcode<salt.modules.dockerio.script_retcode>`
 
 '''
+
+from __future__ import absolute_import
+from salt.ext.six.moves import range
 __docformat__ = 'restructuredtext en'
 
 import datetime
@@ -158,7 +162,7 @@ import types
 
 from salt.modules import cmdmod
 from salt.exceptions import CommandExecutionError, SaltInvocationError
-from salt._compat import string_types
+from salt.ext.six import string_types
 import salt.utils
 import salt.utils.odict
 
@@ -269,21 +273,21 @@ def _get_client(version=None, timeout=None):
 
     client = docker.Client(**kwargs)
     if not version:
-        # set version that match docker deamon
+        # set version that match docker daemon
         client._version = client.version()['ApiVersion']
-    client._auth_configs.update(_merge_auth_bits())
-    return client
 
-
-def _merge_auth_bits():
-    '''
-    Get the pillar configuration
-    '''
-    config = __pillar__.get('docker-registries', {})
+    # try to authenticate the client using credentials
+    # found in pillars
+    registry_auth_config = __pillar__.get('docker-registries', {})
     for k, data in __pillar__.items():
         if k.endswith('-docker-registries'):
-            config.update(data)
-    return config
+            registry_auth_config.update(data)
+
+    for registry, creds in registry_auth_config.items():
+        client.login(creds['username'], password=creds['password'],
+                     email=creds.get('email'), registry=registry)
+
+    return client
 
 
 def _get_image_infos(image):
@@ -355,7 +359,8 @@ def get_containers(all=True,
                    since=None,
                    before=None,
                    limit=-1,
-                   host=False):
+                   host=False,
+                   inspect=False):
     '''
     Get a list of mappings representing all containers
 
@@ -368,27 +373,42 @@ def get_containers(all=True,
     host
         include the Docker host's ipv4 and ipv6 address in return, Default is ``False``
 
+    inspect
+        Get more granular information about each container by running a docker inspect
+
     CLI Example:
 
     .. code-block:: bash
 
         salt '*' docker.get_containers
         salt '*' docker.get_containers host=True
+        salt '*' docker.get_containers host=True inspect=True
     '''
+
     client = _get_client()
     status = base_status.copy()
+
     if host:
         status['host'] = {}
         status['host']['interfaces'] = __salt__['network.interfaces']()
-    ret = client.containers(all=all,
-                            trunc=trunc,
-                            since=since,
-                            before=before,
-                            limit=limit)
-    if ret:
-        _valid(status, comment='All containers in out', out=ret)
-    else:
-        _invalid(status)
+
+    containers = client.containers(all=all,
+                                   trunc=trunc,
+                                   since=since,
+                                   before=before,
+                                   limit=limit)
+
+    # Optionally for each container get more granular information from them
+    # by inspecting the container
+    if inspect:
+        for container in containers:
+            container_id = container.get('Id')
+            if container_id:
+                inspect = _get_container_infos(container_id)
+                container['detail'] = inspect.copy()
+
+    _valid(status, comment='All containers in out', out=containers)
+
     return status
 
 
@@ -509,20 +529,17 @@ def export(container, path):
     '''
     try:
         ppath = os.path.abspath(path)
-        fic = open(ppath, 'w')
-        status = base_status.copy()
-        client = _get_client()
-        response = client.export(_get_container_infos(container)['Id'])
-        try:
+        with salt.utils.fopen(ppath, 'w') as fic:
+            status = base_status.copy()
+            client = _get_client()
+            response = client.export(_get_container_infos(container)['Id'])
             byte = response.read(4096)
             fic.write(byte)
             while byte != '':
                 # Do stuff with byte.
                 byte = response.read(4096)
                 fic.write(byte)
-        finally:
             fic.flush()
-            fic.close()
         _valid(status,
                id_=container, out=ppath,
                comment='Exported to {0}'.format(ppath))
@@ -544,7 +561,10 @@ def create_container(image,
                      dns=None,
                      volumes=None,
                      volumes_from=None,
-                     name=None):
+                     name=None,
+                     cpu_shares=None,
+                     cpuset=None,
+                     binds=None):
     '''
     Create a new container
 
@@ -563,40 +583,69 @@ def create_container(image,
     ports
         port redirections ``({'222': {}})``
     volumes
-        list of volume mappings::
+        list of volume mappings in either local volume, bound volume, or read-only
+        bound volume form::
 
-            (['/mountpoint/in/container:/guest/foo', '/same/path/mounted/point'])
+            (['/var/lib/mysql/', '/usr/local/etc/ssl:/etc/ssl', '/etc/passwd:/etc/passwd:ro'])
+    binds
+        complete dictionary of bound volume mappings::
 
+            { '/usr/local/etc/ssl/certs/internal.crt': {
+                'bind': '/etc/ssl/certs/com.example.internal.crt',
+                'ro': True
+                },
+              '/var/lib/mysql': {
+                'bind': '/var/lib/mysql/',
+                'ro': False
+                }
+            }
+
+        This dictionary is suitable for feeding directly into the Docker API, and all
+        keys are required.
+        (see http://docker-py.readthedocs.org/en/latest/volumes/)
     tty
         attach ttys, Default is ``False``
     stdin_open
         let stdin open, Default is ``False``
     name
         name given to container
+    cpu_shares
+        CPU shares (relative weight)
+    cpuset
+        CPUs in which to allow execution ('0-3' or '0,1')
 
     CLI Example:
 
     .. code-block:: bash
 
         salt '*' docker.create_container o/ubuntu volumes="['/s','/m:/f']"
+
     '''
+    log.trace("modules.dockerio.create_container() called for image " + image)
     status = base_status.copy()
     client = _get_client()
+
+    # In order to permit specification of bind volumes in the volumes field,
+    #  we'll look through it for bind-style specs and move them. This is purely
+    #  for CLI convenience and backwards-compatibility, as states.dockerio
+    #  should parse volumes before this, and the binds argument duplicates this.
+    # N.B. this duplicates code in states.dockerio._parse_volumes()
+    if isinstance(volumes, list):
+        for volume in volumes:
+            if ':' in volume:
+                volspec = volume.split(':')
+                source = volspec[0]
+                target = volspec[1]
+                ro = False
+                try:
+                    if len(volspec) > 2:
+                        ro = volspec[2] == "ro"
+                except IndexError:
+                    pass
+                binds[source] = {'bind': target, 'ro': ro}
+                volumes.remove(volume)
+
     try:
-        mountpoints = {}
-        binds = {}
-        # create empty mountpoints for them to be
-        # editable
-        # either we have a list of guest or host:guest
-        if isinstance(volumes, list):
-            for mountpoint in volumes:
-                mounted = mountpoint
-                if ':' in mountpoint:
-                    parts = mountpoint.split(':')
-                    mountpoint = parts[1]
-                    mounted = parts[0]
-                mountpoints[mountpoint] = {}
-                binds[mounted] = mountpoint
         container_info = client.create_container(
             image=image,
             command=command,
@@ -609,10 +658,14 @@ def create_container(image,
             ports=ports,
             environment=environment,
             dns=dns,
-            volumes=mountpoints,
+            volumes=volumes,
             volumes_from=volumes_from,
             name=name,
+            cpu_shares=cpu_shares,
+            cpuset=cpuset,
+            host_config=docker.utils.create_host_config(binds=binds)
         )
+        log.trace("docker.client.create_container returned: " + str(container_info))
         container = container_info['Id']
         callback = _valid
         comment = 'Container created'
@@ -622,8 +675,9 @@ def create_container(image,
         }
         __salt__['mine.send']('docker.get_containers', host=True)
         return callback(status, id_=container, comment=comment, out=out)
-    except Exception:
+    except Exception, e:
         _invalid(status, id_=image, out=traceback.format_exc())
+        raise e
     __salt__['mine.send']('docker.get_containers', host=True)
     return status
 
@@ -831,7 +885,10 @@ def start(container,
           privileged=False,
           dns=None,
           volumes_from=None,
-          network_mode=None):
+          network_mode=None,
+          restart_policy=None,
+          cap_add=None,
+          cap_drop=None):
     '''
     Start the specified container
 
@@ -844,11 +901,9 @@ def start(container,
 
         salt '*' docker.start <container id>
     '''
-    if not binds:
-        binds = {}
-
-    if not isinstance(binds, dict):
-        raise SaltInvocationError('binds must be formatted as a dictionary')
+    if binds:
+        if not isinstance(binds, dict):
+            raise SaltInvocationError('binds must be formatted as a dictionary')
 
     client = _get_client()
     status = base_status.copy()
@@ -859,7 +914,7 @@ def start(container,
             if port_bindings is not None:
                 try:
                     bindings = {}
-                    for k, v in port_bindings.iteritems():
+                    for k, v in port_bindings.items():
                         bindings[k] = (v.get('HostIp', ''), v['HostPort'])
                 except AttributeError:
                     raise SaltInvocationError(
@@ -875,7 +930,10 @@ def start(container,
                          privileged=privileged,
                          dns=dns,
                          volumes_from=volumes_from,
-                         network_mode=network_mode)
+                         network_mode=network_mode,
+                         restart_policy=restart_policy,
+                         cap_add=cap_add,
+                         cap_drop=cap_drop)
 
             if is_running(dcontainer):
                 _valid(status,
@@ -992,7 +1050,7 @@ def remove_container(container, force=False, v=False):
         remove a running container, Default is ``False``
 
     v
-        verbose mode, Default is ``False``
+        remove the volumes associated to the container, Default is ``False``
 
     CLI Example:
 
@@ -1119,7 +1177,7 @@ def login(url=None, username=None, password=None, email=None):
         salt '*' docker.login <url> <username> <password> <email>
     '''
     client = _get_client()
-    return client.login(url, username, password, email)
+    return client.login(username, password, email, url)
 
 
 def search(term):
@@ -1212,7 +1270,7 @@ def import_image(src, repo, tag=None):
     try:
         ret = client.import_image(src, repository=repo, tag=tag)
         if ret:
-            image_logs, _info = _parse_image_multilogs_string(ret, repo)
+            image_logs, _info = _parse_image_multilogs_string(ret)
             _create_image_assemble_error_status(status, ret, image_logs)
             if status['status'] is not False:
                 infos = _get_image_infos(image_logs[0]['status'])
@@ -1465,7 +1523,7 @@ def inspect_image(image):
     return status
 
 
-def _parse_image_multilogs_string(ret, repo):
+def _parse_image_multilogs_string(ret):
     '''
     Parse image log strings into grokable data
     '''
@@ -1484,15 +1542,24 @@ def _parse_image_multilogs_string(ret, repo):
                     buf = json.loads(buf)
                 except Exception:
                     pass
-                image_logs.append(buf)
+                else:
+                    image_logs.append(buf)
                 buf = ''
         image_logs.reverse()
+
+        # Valid statest when pulling an image from the docker registry
+        valid_states = [
+            'Download complete',
+            'Already exists',
+        ]
+
         # search last layer grabbed
         for l in image_logs:
             if isinstance(l, dict):
-                if l.get('status') == 'Download complete' and l.get('id'):
-                    infos = _get_image_infos(repo)
+                if l.get('status') in valid_states and l.get('id'):
+                    infos = _get_image_infos(l['id'])
                     break
+
     return image_logs, infos
 
 
@@ -1534,7 +1601,7 @@ def _pull_assemble_error_status(status, ret, logs):
     return status
 
 
-def pull(repo, tag=None):
+def pull(repo, tag=None, insecure_registry=False):
     '''
     Pulls an image from any registry. See documentation at top of this page to
     configure authenticated access
@@ -1545,6 +1612,10 @@ def pull(repo, tag=None):
     tag
         specific tag to pull (Optional)
 
+    insecure_registry
+        set as ``True`` to use insecure (non HTTPS) registry. Default is ``False``
+        (only available if using docker-py >= 0.5.0)
+
     CLI Example:
 
     .. code-block:: bash
@@ -1554,9 +1625,16 @@ def pull(repo, tag=None):
     client = _get_client()
     status = base_status.copy()
     try:
-        ret = client.pull(repo, tag=tag)
+        kwargs = {'tag': tag}
+        # if docker-py version is greater than 0.5.0 use the
+        # insecure_registry parameter
+        if salt.utils.compare_versions(ver1=docker.__version__,
+                                       oper='>=',
+                                       ver2='0.5.0'):
+            kwargs['insecure_registry'] = insecure_registry
+        ret = client.pull(repo, **kwargs)
         if ret:
-            image_logs, infos = _parse_image_multilogs_string(ret, repo)
+            image_logs, infos = _parse_image_multilogs_string(ret)
             if infos and infos.get('Id', None):
                 repotag = repo
                 if tag:
@@ -1618,29 +1696,52 @@ def _push_assemble_error_status(status, ret, logs):
     return status
 
 
-def push(repo):
+def push(repo, tag=None, quiet=False, insecure_registry=False):
     '''
-    Pushes an image from any registry. See documentation at top of this page to
+    Pushes an image to any registry. See documentation at top of this page to
     configure authenticated access
 
     repo
         name of repository
 
+    tag
+        specific tag to push (Optional)
+
+    quiet
+        set as ``True`` to quiet output, Default is ``False``
+
+    insecure_registry
+        set as ``True`` to use insecure (non HTTPS) registry. Default is ``False``
+        (only available if using docker-py >= 0.5.0)
+
     CLI Example:
 
     .. code-block:: bash
 
-        salt '*' docker.push <repository>
+        salt '*' docker.push <repository> [tag] [quiet=True|False]
     '''
     client = _get_client()
     status = base_status.copy()
     registry, repo_name = docker.auth.resolve_repository_name(repo)
     try:
-        ret = client.push(repo)
+        kwargs = {'tag': tag}
+        # if docker-py version is greater than 0.5.0 use the
+        # insecure_registry parameter
+        if salt.utils.compare_versions(ver1=docker.__version__,
+                                       oper='>=',
+                                       ver2='0.5.0'):
+            kwargs['insecure_registry'] = insecure_registry
+        ret = client.push(repo, **kwargs)
         if ret:
-            image_logs, infos = _parse_image_multilogs_string(ret, repo_name)
+            image_logs, infos = _parse_image_multilogs_string(ret)
             if image_logs:
-                status['out'] = image_logs
+                repotag = repo_name
+                if tag:
+                    repotag = '{0}:{1}'.format(repo, tag)
+                if not quiet:
+                    status['out'] = image_logs
+                else:
+                    status['out'] = None
                 laststatus = image_logs[2].get('status', None)
                 if laststatus and (
                     ('already pushed' in laststatus)
@@ -1650,7 +1751,7 @@ def push(repo):
                     status['status'] = True
                     status['id'] = _get_image_infos(repo)['Id']
                     status['comment'] = 'Image {0}({1}) was pushed'.format(
-                        repo, status['id'])
+                        repotag, status['id'])
                 else:
                     _push_assemble_error_status(status, ret, image_logs)
             else:
@@ -1692,14 +1793,22 @@ def _run_wrapper(status, container, func, cmd, *args, **kwargs):
     container_id = container_info['Id']
     if driver.startswith('lxc-'):
         full_cmd = 'lxc-attach -n {0} -- {1}'.format(container_id, cmd)
-    elif driver.startswith('native-') and HAS_NSENTER:
-        # http://jpetazzo.github.io/2014/03/23/lxc-attach-nsinit-nsenter-docker-0-9/
-        container_pid = container_info['State']['Pid']
-        if container_pid == 0:
-            _invalid(status, id_=container, comment='Container is not running')
-            return status
-        full_cmd = ('nsenter --target {pid} --mount --uts --ipc --net --pid'
-                    ' {cmd}'.format(pid=container_pid, cmd=cmd))
+    elif driver.startswith('native-'):
+        if HAS_NSENTER:
+            # http://jpetazzo.github.io/2014/03/23/lxc-attach-nsinit-nsenter-docker-0-9/
+            container_pid = container_info['State']['Pid']
+            if container_pid == 0:
+                _invalid(status, id_=container,
+                         comment='Container is not running')
+                return status
+            full_cmd = (
+                'nsenter --target {pid} --mount --uts --ipc --net --pid'
+                ' -- {cmd}'.format(pid=container_pid, cmd=cmd)
+            )
+        else:
+            raise CommandExecutionError(
+                'nsenter is not installed on the minion, cannot run command'
+            )
     else:
         raise NotImplementedError(
             'Unknown docker ExecutionDriver {0!r}. Or didn\'t find command'
@@ -1720,6 +1829,95 @@ def _run_wrapper(status, container, func, cmd, *args, **kwargs):
     except Exception:
         _invalid(status, id_=container,
                  comment=comment, out=traceback.format_exc())
+    return status
+
+
+def load(imagepath):
+    '''
+    Load the specified file at imagepath into docker that was generated from
+    a docker save command
+    e.g. `docker load < imagepath`
+
+    imagepath
+        imagepath to docker tar file
+
+    CLI Example:
+
+    .. code-block:: bash
+
+        salt '*' docker.load /path/to/image
+    '''
+
+    status = base_status.copy()
+    if os.path.isfile(imagepath):
+        try:
+            dockercmd = ['docker', 'load', '-i', imagepath]
+            ret = __salt__['cmd.run'](dockercmd, python_shell=False)
+            if ((isinstance(ret, dict) and
+                ('retcode' in ret) and
+                (ret['retcode'] != 0))):
+                return _invalid(status, id_=None,
+                                out=ret,
+                                comment='Command to load image {0} failed.'.format(imagepath))
+
+            _valid(status, id_=None, out=ret, comment='Image load success')
+        except Exception:
+            _invalid(status, id_=None,
+                    comment="Image not loaded.",
+                    out=traceback.format_exc())
+    else:
+        _invalid(status, id_=None,
+                comment='Image file {0} could not be found.'.format(imagepath),
+                out=traceback.format_exc())
+
+    return status
+
+
+def save(image, filename):
+    '''
+    .. versionadded:: 2015.5.0
+
+    Save the specified image to filename from docker
+    e.g. `docker save image > filename`
+
+    image
+        name of image
+
+    filename
+        The filename of the saved docker image
+
+    CLI Example:
+
+    .. code-block:: bash
+
+        salt '*' docker.save arch_image /path/to/save/image
+    '''
+    status = base_status.copy()
+    ok = False
+    try:
+        _info = _get_image_infos(image)
+        ok = True
+    except Exception:
+        _invalid(status, id_=image,
+                comment="docker image {0} could not be found.".format(image),
+                out=traceback.format_exc())
+
+    if ok:
+        try:
+            dockercmd = ['docker', 'save', '-o', filename, image]
+            ret = __salt__['cmd.run'](dockercmd)
+            if ((isinstance(ret, dict) and
+                ('retcode' in ret) and
+                (ret['retcode'] != 0))):
+                return _invalid(status,
+                                id_=image,
+                                out=ret,
+                                comment='Command to save image {0} to {1} failed.'.format(image, filename))
+
+            _valid(status, id_=image, out=ret, comment='Image save success')
+        except Exception:
+            _invalid(status, id_=image, comment="Image not saved.", out=traceback.format_exc())
+
     return status
 
 
@@ -1893,14 +2091,12 @@ def get_container_root(container):
         'containers',
         _get_container_infos(container)['Id'],
     )
-    default_rootfs = os.path.join(default_path, 'roofs')
+    default_rootfs = os.path.join(default_path, 'rootfs')
     rootfs_re = re.compile(r'^lxc.rootfs\s*=\s*(.*)\s*$', re.U)
     try:
-        lxcconfig = os.path.join(
-            default_path, 'config.lxc')
-        f = open(lxcconfig)
-        try:
-            lines = f.readlines()
+        lxcconfig = os.path.join(default_path, 'config.lxc')
+        with salt.utils.fopen(lxcconfig) as fhr:
+            lines = fhr.readlines()
             rlines = lines[:]
             rlines.reverse()
             for rl in rlines:
@@ -1908,8 +2104,6 @@ def get_container_root(container):
                 if robj:
                     rootfs = robj.groups()[0]
                     break
-        finally:
-            f.close()
     except Exception:
         rootfs = default_rootfs
     return rootfs
@@ -1964,7 +2158,7 @@ def _script(status,
                         'cache_error': True}
             shutil.copyfile(fn_, path)
         in_path = os.path.join('/', os.path.relpath(path, rpath))
-        os.chmod(path, 0755)
+        os.chmod(path, 0o755)
         command = in_path + ' ' + str(args) if args else in_path
         status = run_func_(container,
                            command,

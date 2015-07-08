@@ -21,7 +21,7 @@ no disk space:
 
     > /var/log/messages:
       cmd.run:
-        - unless: echo 'foo' > /tmp/.test
+        - unless: echo 'foo' > /tmp/.test && rm -f /tmp/.test
 
 Only run if the file specified by ``creates`` does not exist, in this case
 touch /tmp/foo if it does not exist.
@@ -34,8 +34,7 @@ touch /tmp/foo if it does not exist.
 
 .. note::
 
-    The ``creates`` option will be supported starting with the feature release
-    codenamed Helium
+    The ``creates`` option was added to version 2014.7.0
 
 Salt determines whether the ``cmd`` state is successfully enforced based on the exit
 code returned by the command. If the command returns a zero exit code, then salt
@@ -133,9 +132,8 @@ it can also watch a git state for changes
           - git: my-project
 
 
-Should I use :mod:`cmd.run <salt.states.cmd.run>` or :mod:`cmd.wait
-<salt.states.cmd.wait>`?
--------------------------------------------------------------------------------
+Should I use :mod:`cmd.run <salt.states.cmd.run>` or :mod:`cmd.wait <salt.states.cmd.wait>`?
+--------------------------------------------------------------------------------------------
 
 These two states are often confused. The important thing to remember about them
 is that :mod:`cmd.run <salt.states.cmd.run>` states are run each time the SLS
@@ -148,22 +146,19 @@ executed when the state it is watching changes. Example:
 .. code-block:: yaml
 
     /usr/local/bin/postinstall.sh:
-      cmd:
-        - wait
+      cmd.wait:
         - watch:
           - pkg: mycustompkg
-      file:
-        - managed
+      file.managed:
         - source: salt://utils/scripts/postinstall.sh
 
     mycustompkg:
-      pkg:
-        - installed
+      pkg.installed:
         - require:
           - file: /usr/local/bin/postinstall.sh
 
 How do I create an environment from a pillar map?
--------------------------------------------------------------------------------
+-------------------------------------------------
 
 The map that comes from a pillar cannot be directly consumed by the env option.
 To use it one must convert it to a list. Example:
@@ -195,7 +190,7 @@ import logging
 
 # Import salt libs
 from salt.exceptions import CommandExecutionError, SaltRenderError
-from salt._compat import string_types
+from salt.ext.six import string_types
 
 log = logging.getLogger(__name__)
 
@@ -233,11 +228,13 @@ def _reinterpreted_state(state):
                 key, val = item.split('=')
                 data[key] = val
         except ValueError:
-            return _failout(
+            state = _failout(
                 state,
                 'Failed parsing script output! '
                 'Stdout must be JSON or a line of name=value pairs.'
             )
+            state['changes'].update(ret)
+            return state
 
     changed = _is_true(data.get('changed', 'no'))
 
@@ -298,42 +295,49 @@ def mod_run_check(cmd_kwargs, onlyif, unless, group, creates):
 
     if onlyif is not None:
         if isinstance(onlyif, string_types):
-            cmd = __salt__['cmd.retcode'](onlyif, ignore_retcode=True, **cmd_kwargs)
+            cmd = __salt__['cmd.retcode'](onlyif, ignore_retcode=True, python_shell=True, **cmd_kwargs)
             log.debug('Last command return code: {0}'.format(cmd))
             if cmd != 0:
                 return {'comment': 'onlyif execution failed',
+                        'skip_watch': True,
                         'result': True}
         elif isinstance(onlyif, list):
             for entry in onlyif:
-                cmd = __salt__['cmd.retcode'](entry, ignore_retcode=True, **cmd_kwargs)
+                cmd = __salt__['cmd.retcode'](entry, ignore_retcode=True, python_shell=True, **cmd_kwargs)
                 log.debug('Last command return code: {0}'.format(cmd))
                 if cmd != 0:
                     return {'comment': 'onlyif execution failed',
+                        'skip_watch': True,
                         'result': True}
         elif not isinstance(onlyif, string_types):
             if not onlyif:
                 log.debug('Command not run: onlyif did not evaluate to string_type')
                 return {'comment': 'onlyif execution failed',
+                        'skip_watch': True,
                         'result': True}
 
     if unless is not None:
         if isinstance(unless, string_types):
-            cmd = __salt__['cmd.retcode'](unless, ignore_retcode=True, **cmd_kwargs)
+            cmd = __salt__['cmd.retcode'](unless, ignore_retcode=True, python_shell=True, **cmd_kwargs)
             log.debug('Last command return code: {0}'.format(cmd))
             if cmd == 0:
                 return {'comment': 'unless execution succeeded',
+                        'skip_watch': True,
                         'result': True}
         elif isinstance(unless, list):
+            cmd = []
             for entry in unless:
-                cmd = __salt__['cmd.retcode'](entry, ignore_retcode=True, **cmd_kwargs)
+                cmd.append(__salt__['cmd.retcode'](entry, ignore_retcode=True, python_shell=True, **cmd_kwargs))
                 log.debug('Last command return code: {0}'.format(cmd))
-                if cmd == 0:
+                if all([c == 0 for c in cmd]):
                     return {'comment': 'unless execution succeeded',
+                            'skip_watch': True,
                             'result': True}
         elif not isinstance(unless, string_types):
             if unless:
                 log.debug('Command not run: unless did not evaluate to string_type')
                 return {'comment': 'unless execution succeeded',
+                        'skip_watch': True,
                         'result': True}
 
     if isinstance(creates, string_types) and os.path.exists(creates):
@@ -342,7 +346,7 @@ def mod_run_check(cmd_kwargs, onlyif, unless, group, creates):
     elif isinstance(creates, list) and all([
         os.path.exists(path) for path in creates
     ]):
-        return {'comment': 'All files in creates exist'.format(creates),
+        return {'comment': 'All files in creates exist',
                 'result': True}
 
     # No reason to stop, return True
@@ -421,7 +425,7 @@ def wait(name,
     creates
         Only run if the file specified by ``creates`` does not exist.
 
-        .. versionadded:: Helium
+        .. versionadded:: 2014.7.0
 
     output_loglevel
         Control the loglevel at which the output from the command is logged.
@@ -634,7 +638,7 @@ def run(name,
     creates
         Only run if the file specified by ``creates`` does not exist.
 
-        .. versionadded:: Helium
+        .. versionadded:: 2014.7.0
 
     use_vt
         Use VT utils (saltstack) to stream the command output more
@@ -707,7 +711,7 @@ def run(name,
         if not __opts__['test']:
             try:
                 cmd_all = __salt__['cmd.run_all'](
-                    name, timeout=timeout, **cmd_kwargs
+                    name, timeout=timeout, python_shell=True, **cmd_kwargs
                 )
             except CommandExecutionError as err:
                 ret['comment'] = str(err)
@@ -821,7 +825,7 @@ def script(name,
     creates
         Only run if the file specified by ``creates`` does not exist.
 
-        .. versionadded:: Helium
+        .. versionadded:: 2014.7.0
 
     use_vt
         Use VT utils (saltstack) to stream the command output more
@@ -896,13 +900,13 @@ def script(name,
 
         if __opts__['test']:
             ret['result'] = None
-            ret['comment'] = 'Command {0!r} would have been executed'
-            ret['comment'] = ret['comment'].format(name)
+            ret['comment'] = 'Command {0!r} would have been ' \
+                             'executed'.format(name)
             return _reinterpreted_state(ret) if stateful else ret
 
         # Wow, we passed the test, run this sucker!
         try:
-            cmd_all = __salt__['cmd.script'](source, **cmd_kwargs)
+            cmd_all = __salt__['cmd.script'](source, python_shell=True, **cmd_kwargs)
         except (CommandExecutionError, SaltRenderError, IOError) as err:
             ret['comment'] = str(err)
             return ret

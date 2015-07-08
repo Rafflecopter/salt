@@ -12,7 +12,6 @@ import logging
 import os
 import shutil
 import tempfile
-import warnings
 from contextlib import contextmanager
 
 # Import Salt Testing libs
@@ -28,9 +27,8 @@ import salt.minion
 import salt.utils
 import salt.utils.network
 import integration
-from salt import config as sconfig, version as salt_version
-from salt.version import SaltStackVersion
-from salt.cloud.exceptions import SaltCloudConfigError
+from salt import config as sconfig
+from salt.exceptions import SaltCloudConfigError
 
 # Import Third-Party Libs
 import yaml
@@ -161,7 +159,7 @@ class ConfigTestCase(TestCase, integration.AdaptedConfigurationTestCaseMixIn):
                 'log_file: {1}\n'.format(root_dir, fpath)
             )
             # Let's set the environment variable, yet, since the configuration
-            # file path is not the default one, ie, the user has passed an
+            # file path is not the default one, i.e., the user has passed an
             # alternative configuration file form the CLI parser, the
             # environment variable will be ignored.
             os.environ['SALT_MASTER_CONFIG'] = env_fpath
@@ -203,7 +201,7 @@ class ConfigTestCase(TestCase, integration.AdaptedConfigurationTestCaseMixIn):
                 'log_file: {1}\n'.format(root_dir, fpath)
             )
             # Let's set the environment variable, yet, since the configuration
-            # file path is not the default one, ie, the user has passed an
+            # file path is not the default one, i.e., the user has passed an
             # alternative configuration file form the CLI parser, the
             # environment variable will be ignored.
             os.environ['SALT_MINION_CONFIG'] = env_fpath
@@ -257,7 +255,7 @@ class ConfigTestCase(TestCase, integration.AdaptedConfigurationTestCaseMixIn):
                 'log_file: {1}\n'.format(root_dir, fpath)
             )
             # Let's set the environment variable, yet, since the configuration
-            # file path is not the default one, ie, the user has passed an
+            # file path is not the default one, i.e., the user has passed an
             # alternative configuration file form the CLI parser, the
             # environment variable will be ignored.
             os.environ['SALT_MASTER_CONFIG'] = env_fpath
@@ -357,72 +355,13 @@ class ConfigTestCase(TestCase, integration.AdaptedConfigurationTestCaseMixIn):
         self.assertEqual(syndic_opts['master_ip'], '127.0.0.1')
         self.assertEqual(syndic_opts['master'], 'localhost')
         self.assertEqual(syndic_opts['sock_dir'], os.path.join(root_dir, 'minion_sock'))
-        self.assertEqual(syndic_opts['cachedir'], os.path.join(root_dir, 'cachedir'))
-        self.assertEqual(syndic_opts['log_file'], os.path.join(root_dir, 'osyndic.log'))
-        self.assertEqual(syndic_opts['pidfile'], os.path.join(root_dir, 'osyndic.pid'))
+        self.assertEqual(syndic_opts['cachedir'], os.path.join(root_dir, 'cache'))
+        self.assertEqual(syndic_opts['log_file'], os.path.join(root_dir, 'var/log/salt/syndic'))
+        self.assertEqual(syndic_opts['pidfile'], os.path.join(root_dir, 'var/run/salt-syndic.pid'))
         # Show that the options of localclient that repub to local master
         # are not merged with syndic ones
         self.assertEqual(syndic_opts['_master_conf_file'], minion_conf_path)
         self.assertEqual(syndic_opts['_minion_conf_file'], syndic_conf_path)
-
-    def test_check_dns_deprecation_warning(self):
-        helium_version = SaltStackVersion.from_name('Helium')
-        if salt_version.__version_info__ >= helium_version:
-            raise AssertionError(
-                'Failing this test on purpose! Please delete this test case, '
-                'the \'check_dns\' keyword argument and the deprecation '
-                'warnings in `salt.config.minion_config` and '
-                'salt.config.apply_minion_config`'
-            )
-
-        # Let's force the warning to always be thrown
-        warnings.resetwarnings()
-        warnings.filterwarnings(
-            'always', '(.*)check_dns(.*)', DeprecationWarning, 'salt.config'
-        )
-        with warnings.catch_warnings(record=True) as w:
-            sconfig.minion_config(None, None, check_dns=True)
-            self.assertEqual(
-                'The functionality behind the \'check_dns\' keyword argument '
-                'is no longer required, as such, it became unnecessary and is '
-                'now deprecated. \'check_dns\' will be removed in Salt '
-                '{0}.'.format(helium_version.formatted_version),
-                str(w[-1].message)
-            )
-
-        with warnings.catch_warnings(record=True) as w:
-            sconfig.apply_minion_config(
-                overrides=None, defaults=None, check_dns=True
-            )
-            self.assertEqual(
-                'The functionality behind the \'check_dns\' keyword argument '
-                'is no longer required, as such, it became unnecessary and is '
-                'now deprecated. \'check_dns\' will be removed in Salt '
-                '{0}.'.format(helium_version.formatted_version),
-                str(w[-1].message)
-            )
-
-        with warnings.catch_warnings(record=True) as w:
-            sconfig.minion_config(None, None, check_dns=False)
-            self.assertEqual(
-                'The functionality behind the \'check_dns\' keyword argument '
-                'is no longer required, as such, it became unnecessary and is '
-                'now deprecated. \'check_dns\' will be removed in Salt '
-                '{0}.'.format(helium_version.formatted_version),
-                str(w[-1].message)
-            )
-
-        with warnings.catch_warnings(record=True) as w:
-            sconfig.apply_minion_config(
-                overrides=None, defaults=None, check_dns=False
-            )
-            self.assertEqual(
-                'The functionality behind the \'check_dns\' keyword argument '
-                'is no longer required, as such, it became unnecessary and is '
-                'now deprecated. \'check_dns\' will be removed in Salt '
-                '{0}.'.format(helium_version.formatted_version),
-                str(w[-1].message)
-            )
 
     def test_issue_6714_parsing_errors_logged(self):
         try:
@@ -477,31 +416,6 @@ class ConfigTestCase(TestCase, integration.AdaptedConfigurationTestCaseMixIn):
 # <---- Salt Cloud Configuration Tests ---------------------------------------------
 
     # cloud_config tests
-
-    def test_cloud_config_vm_profiles_config(self):
-        '''
-        Tests passing in vm_config and profiles_config.
-        This scenario is a bad use of the API.
-        '''
-        self.assertRaises(RuntimeError, sconfig.cloud_config, PATH,
-                          vm_config='test', profiles_config='test')
-
-    def test_cloud_config_vm_profiles_config_path(self):
-        '''
-        Tests passing in vm_config_path and profiles_config_path.
-        This scenario is a bad use of the API.
-        '''
-        self.assertRaises(RuntimeError, sconfig.cloud_config, PATH,
-                          vm_config_path='test', profiles_config_path='test')
-
-    @patch('salt.config.load_config',
-           MagicMock(return_value={'vm_config': 'foo', 'profiles_config': 'bar'}))
-    def test_cloud_config_overrides_bad_api(self):
-        '''
-        Tests passing in vm_config and profiles_config through the overrides
-        cloud config path
-        '''
-        self.assertRaises(SaltCloudConfigError, sconfig.cloud_config, PATH)
 
     @patch('salt.config.load_config', MagicMock(return_value={}))
     def test_cloud_config_double_master_path(self):
@@ -957,7 +871,7 @@ class ConfigTestCase(TestCase, integration.AdaptedConfigurationTestCaseMixIn):
                 'log_file: {1}\n'.format(root_dir, fpath)
             )
             # Let's set the environment variable, yet, since the configuration
-            # file path is not the default one, ie, the user has passed an
+            # file path is not the default one, i.e., the user has passed an
             # alternative configuration file form the CLI parser, the
             # environment variable will be ignored.
             os.environ['SALT_CLOUD_CONFIG'] = env_fpath
@@ -1009,7 +923,7 @@ class ConfigTestCase(TestCase, integration.AdaptedConfigurationTestCaseMixIn):
         '''
         config = sconfig.cloud_config(self.get_config_file_path('cloud'))
         self.assertIn('ec2-config', config['providers'])
-        self.assertIn('Ubuntu-13.04-AMD64', config['profiles'])
+        self.assertIn('ec2-test', config['profiles'])
 
 # <---- Salt Cloud Configuration Tests ---------------------------------------------
 

@@ -2,6 +2,7 @@
 '''
 Execute puppet routines
 '''
+from __future__ import absolute_import
 
 # Import python libs
 import logging
@@ -124,8 +125,7 @@ class _Puppet(object):
         if self.subcmd == 'agent':
             # no arguments are required
             args.extend([
-                'onetime', 'verbose', 'ignorecache', 'no-daemonize',
-                'no-usecacheonfailure', 'no-splay', 'show_diff'
+                'test'
             ])
 
         # finally do this after subcmd has been matched for all remaining args
@@ -167,7 +167,13 @@ def run(*args, **kwargs):
 
     puppet.kwargs.update(salt.utils.clean_kwargs(**kwargs))
 
-    return __salt__['cmd.run_all'](repr(puppet))
+    ret = __salt__['cmd.run_all'](repr(puppet), python_shell=False)
+    if ret['retcode'] in [0, 2]:
+        ret['retcode'] = 0
+    else:
+        ret['retcode'] = 1
+
+    return ret
 
 
 def noop(*args, **kwargs):
@@ -190,7 +196,7 @@ def noop(*args, **kwargs):
 
 def enable():
     '''
-    .. versionadded:: Helium
+    .. versionadded:: 2014.7.0
 
     Enable the puppet agent
 
@@ -198,7 +204,7 @@ def enable():
 
     .. code-block:: bash
 
-        salt '*' puppet.disable
+        salt '*' puppet.enable
     '''
 
     _check_puppet()
@@ -216,17 +222,23 @@ def enable():
     return False
 
 
-def disable():
+def disable(message=None):
     '''
-    .. versionadded:: Helium
+    .. versionadded:: 2014.7.0
 
     Disable the puppet agent
+
+    message
+        .. versionadded:: 2015.5.2
+
+        Disable message to send to puppet
 
     CLI Example:
 
     .. code-block:: bash
 
         salt '*' puppet.disable
+        salt '*' puppet.disable 'disabled for a good reason'
     '''
 
     _check_puppet()
@@ -238,7 +250,8 @@ def disable():
         with salt.utils.fopen(puppet.disabled_lockfile, 'w') as lockfile:
             try:
                 # Puppet chokes when no valid json is found
-                lockfile.write('{}')
+                str = '{{"disabled_message":"{0}"}}'.format(message) if message is not None else '{}'
+                lockfile.write(str)
                 lockfile.close()
                 return True
             except (IOError, OSError) as exc:
@@ -249,7 +262,7 @@ def disable():
 
 def status():
     '''
-    .. versionadded:: Helium
+    .. versionadded:: 2014.7.0
 
     Display puppet agent status
 
@@ -290,7 +303,7 @@ def status():
 
 def summary():
     '''
-    .. versionadded:: Helium
+    .. versionadded:: 2014.7.0
 
     Show a summary of the last puppet agent run
 
@@ -378,7 +391,9 @@ def fact(name, puppet=False):
     _check_facter()
 
     opt_puppet = '--puppet' if puppet else ''
-    ret = __salt__['cmd.run']('facter {0} {1}'.format(opt_puppet, name))
+    ret = __salt__['cmd.run'](
+            'facter {0} {1}'.format(opt_puppet, name),
+            python_shell=False)
     if not ret:
         return ''
     return ret

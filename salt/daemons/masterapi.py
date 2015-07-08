@@ -3,6 +3,7 @@
 This module contains all of the routines needed to set up a master server, this
 involves preparing the three listeners and the workers needed by the master.
 '''
+from __future__ import absolute_import
 
 # Import python libs
 import fnmatch
@@ -17,6 +18,7 @@ except ImportError:
     # In case a non-master needs to import this module
     pass
 
+import tempfile
 
 # Import salt libs
 import salt.crypt
@@ -37,6 +39,7 @@ import salt.utils.event
 import salt.utils.verify
 import salt.utils.minions
 import salt.utils.gzip_util
+import salt.utils.jid
 from salt.pillar import git_pillar
 from salt.utils.event import tagify
 from salt.exceptions import SaltMasterError
@@ -137,6 +140,23 @@ def clean_expired_tokens(opts):
                         pass
 
 
+def clean_pub_auth(opts):
+    try:
+        auth_cache = os.path.join(opts['cachedir'], 'publish_auth')
+        if not os.path.exists(auth_cache):
+            return
+        else:
+            for (dirpath, dirnames, filenames) in os.walk(auth_cache):
+                for auth_file in filenames:
+                    auth_file_path = os.path.join(dirpath, auth_file)
+                    if not os.path.isfile(auth_file_path):
+                        continue
+                    if os.path.getmtime(auth_file_path) - time.time() > opts['keep_jobs']:
+                        os.remove(auth_file_path)
+    except (IOError, OSError):
+        log.error('Unable to delete pub auth file')
+
+
 def clean_old_jobs(opts):
     '''
     Clean out the old jobs from the job cache
@@ -210,20 +230,22 @@ def fileserver_update(fileserver):
     '''
     try:
         if not fileserver.servers:
-            log.error('No fileservers loaded, the master will not be'
-                      'able to serve files to minions')
+            log.error(
+                'No fileservers loaded, the master will not be able to '
+                'serve files to minions'
+            )
             raise SaltMasterError('No fileserver backends available')
         fileserver.update()
     except Exception as exc:
         log.error(
             'Exception {0} occurred in file server update'.format(exc),
-            exc_info=log.isEnabledFor(logging.DEBUG)
+            exc_info_on_loglevel=logging.DEBUG
         )
 
 
 class AutoKey(object):
     '''
-    Impliment the methods to run auto key acceptance and rejection
+    Implement the methods to run auto key acceptance and rejection
     '''
     def __init__(self, opts):
         self.opts = opts
@@ -356,6 +378,7 @@ class RemoteFuncs(object):
                 'master',
                 self.opts['sock_dir'],
                 self.opts['transport'],
+                opts=self.opts,
                 listen=False)
         self.serial = salt.payload.Serial(opts)
         self.ckminions = salt.utils.minions.CkMinions(opts)
@@ -415,7 +438,8 @@ class RemoteFuncs(object):
                 perms,
                 load['fun'],
                 load['tgt'],
-                load.get('tgt_type', 'glob'))
+                load.get('tgt_type', 'glob'),
+                publish_validate=True)
         if not good:
             return False
         return True
@@ -439,6 +463,7 @@ class RemoteFuncs(object):
         mopts['nodegroups'] = self.opts['nodegroups']
         mopts['state_auto_order'] = self.opts['state_auto_order']
         mopts['state_events'] = self.opts['state_events']
+        mopts['state_aggregate'] = self.opts['state_aggregate']
         mopts['jinja_lstrip_blocks'] = self.opts['jinja_lstrip_blocks']
         mopts['jinja_trim_blocks'] = self.opts['jinja_trim_blocks']
         return mopts
@@ -500,10 +525,16 @@ class RemoteFuncs(object):
         ret = {}
         if not salt.utils.verify.valid_id(self.opts, load['id']):
             return ret
+        match_type = load.get('expr_form', 'glob')
+        if match_type.lower() == 'pillar':
+            match_type = 'pillar_exact'
+        if match_type.lower() == 'compound':
+            match_type = 'compound_pillar_exact'
         checker = salt.utils.minions.CkMinions(self.opts)
         minions = checker.check_minions(
                 load['tgt'],
-                load.get('expr_form', 'glob')
+                match_type,
+                greedy=False
                 )
         for minion in minions:
             mine = os.path.join(
@@ -552,7 +583,7 @@ class RemoteFuncs(object):
         if self.opts.get('minion_data_cache', False) or self.opts.get('enforce_mine_cache', False):
             cdir = os.path.join(self.opts['cachedir'], 'minions', load['id'])
             if not os.path.isdir(cdir):
-                return True
+                return False
             datap = os.path.join(cdir, 'mine.p')
             if os.path.isfile(datap):
                 try:
@@ -575,7 +606,7 @@ class RemoteFuncs(object):
         if self.opts.get('minion_data_cache', False) or self.opts.get('enforce_mine_cache', False):
             cdir = os.path.join(self.opts['cachedir'], 'minions', load['id'])
             if not os.path.isdir(cdir):
-                return True
+                return False
             datap = os.path.join(cdir, 'mine.p')
             if os.path.isfile(datap):
                 try:
@@ -598,7 +629,7 @@ class RemoteFuncs(object):
             return False
         if not salt.utils.verify.valid_id(self.opts, load['id']):
             return False
-        file_recv_max_size = 1024*1024 * self.opts.get('file_recv_max_size', 100)
+        file_recv_max_size = 1024*1024 * self.opts['file_recv_max_size']
 
         if 'loc' in load and load['loc'] < 0:
             log.error('Invalid file pointer: load[loc] < 0')
@@ -611,12 +642,18 @@ class RemoteFuncs(object):
                 )
             )
             return False
+        # Normalize Windows paths
+        normpath = load['path']
+        if ':' in normpath:
+            # make sure double backslashes are normalized
+            normpath = normpath.replace('\\', '/')
+            normpath = os.path.normpath(normpath)
         cpath = os.path.join(
-                self.opts['cachedir'],
-                'minions',
-                load['id'],
-                'files',
-                load['path'])
+            self.opts['cachedir'],
+            'minions',
+            load['id'],
+            'files',
+            normpath)
         cdir = os.path.dirname(cpath)
         if not os.path.isdir(cdir):
             try:
@@ -645,7 +682,8 @@ class RemoteFuncs(object):
                 load['id'],
                 load.get('saltenv', load.get('env')),
                 load.get('ext'),
-                self.mminion.functions)
+                self.mminion.functions,
+                pillar=load.get('pillar_override', {}))
         pillar_dirs = {}
         data = pillar.compile_pillar(pillar_dirs=pillar_dirs)
         if self.opts.get('minion_data_cache', False):
@@ -653,12 +691,15 @@ class RemoteFuncs(object):
             if not os.path.isdir(cdir):
                 os.makedirs(cdir)
             datap = os.path.join(cdir, 'data.p')
-            with salt.utils.fopen(datap, 'w+b') as fp_:
+            tmpfh, tmpfname = tempfile.mkstemp(dir=cdir)
+            os.close(tmpfh)
+            with salt.utils.fopen(tmpfname, 'w+b') as fp_:
                 fp_.write(
                         self.serial.dumps(
                             {'grains': load['grains'],
                              'pillar': data})
                             )
+            os.rename(tmpfname, datap)
         return data
 
     def _minion_event(self, load):
@@ -674,7 +715,10 @@ class RemoteFuncs(object):
             for event in load['events']:
                 self.event.fire_event(event, event['tag'])  # old dup event
                 if load.get('pretag') is not None:
-                    self.event.fire_event(event, tagify(event['tag'], base=load['pretag']))
+                    if 'data' in event:
+                        self.event.fire_event(event['data'], tagify(event['tag'], base=load['pretag']))
+                    else:
+                        self.event.fire_event(event, tagify(event['tag'], base=load['pretag']))
         else:
             tag = load['tag']
             self.event.fire_event(load, tag)
@@ -840,7 +884,7 @@ class RemoteFuncs(object):
             fp_.write(load['id'])
         return ret
 
-    def minion_publish(self, load, skip_verify=False):
+    def minion_publish(self, load):
         '''
         Publish a command initiated from a minion, this method executes minion
         restrictions so that the minion publication will only work if it is
@@ -921,7 +965,9 @@ class RemoteFuncs(object):
         if 'id' not in load:
             return False
         keyapi = salt.key.Key(self.opts)
-        keyapi.delete_key(load['id'])
+        keyapi.delete_key(load['id'],
+                          preserve_minions=load.get('preserve_minion_cache',
+                                                         False))
         return True
 
 
@@ -942,6 +988,7 @@ class LocalFuncs(object):
                 'master',
                 self.opts['sock_dir'],
                 self.opts['transport'],
+                opts=self.opts,
                 listen=False)
         # Make a client
         self.local = salt.client.get_local_client(mopts=self.opts)
@@ -980,13 +1027,10 @@ class LocalFuncs(object):
                 log.warning(msg)
                 return dict(error=dict(name='TokenAuthenticationError',
                                        message=msg))
-            if token['name'] not in self.opts['external_auth'][token['eauth']]:
-                msg = 'Authentication failure of type "token" occurred.'
-                log.warning(msg)
-                return dict(error=dict(name='TokenAuthenticationError',
-                                       message=msg))
             good = self.ckminions.runner_check(
-                    self.opts['external_auth'][token['eauth']][token['name']] if token['name'] in self.opts['external_auth'][token['eauth']] else self.opts['external_auth'][token['eauth']]['*'],
+                    self.opts['external_auth'][token['eauth']][token['name']]
+                    if token['name'] in self.opts['external_auth'][token['eauth']]
+                    else self.opts['external_auth'][token['eauth']]['*'],
                     load['fun'])
             if not good:
                 msg = ('Authentication failure of type "token" occurred for '
@@ -1007,7 +1051,7 @@ class LocalFuncs(object):
                         'introspecting {0}: {1}'.format(fun, exc))
                 return dict(error=dict(name=exc.__class__.__name__,
                                        args=exc.args,
-                                      message=exc.message))
+                                      message=str(exc)))
 
         if 'eauth' not in load:
             msg = ('Authentication failure of type "eauth" occurred for '
@@ -1058,7 +1102,7 @@ class LocalFuncs(object):
                         'introspecting {0}: {1}'.format(fun, exc))
                 return dict(error=dict(name=exc.__class__.__name__,
                                        args=exc.args,
-                                       message=exc.message))
+                                       message=str(exc)))
 
         except Exception as exc:
             log.error(
@@ -1066,7 +1110,7 @@ class LocalFuncs(object):
             )
             return dict(error=dict(name=exc.__class__.__name__,
                                    args=exc.args,
-                                   message=exc.message))
+                                   message=str(exc)))
 
     def wheel(self, load):
         '''
@@ -1092,15 +1136,10 @@ class LocalFuncs(object):
                 log.warning(msg)
                 return dict(error=dict(name='TokenAuthenticationError',
                                        message=msg))
-            if token['name'] not in self.opts['external_auth'][token['eauth']]:
-                msg = 'Authentication failure of type "token" occurred.'
-                log.warning(msg)
-                return dict(error=dict(name='TokenAuthenticationError',
-                                       message=msg))
             good = self.ckminions.wheel_check(
                     self.opts['external_auth'][token['eauth']][token['name']]
-                        if token['name'] in self.opts['external_auth'][token['eauth']]
-                        else self.opts['external_auth'][token['eauth']]['*'],
+                    if token['name'] in self.opts['external_auth'][token['eauth']]
+                    else self.opts['external_auth'][token['eauth']]['*'],
                     load['fun'])
             if not good:
                 msg = ('Authentication failure of type "token" occurred for '
@@ -1109,7 +1148,7 @@ class LocalFuncs(object):
                 return dict(error=dict(name='TokenAuthenticationError',
                                        message=msg))
 
-            jid = salt.utils.gen_jid()
+            jid = salt.utils.jid.gen_jid()
             fun = load.pop('fun')
             tag = tagify(jid, prefix='wheel')
             data = {'fun': "wheel.{0}".format(fun),
@@ -1179,7 +1218,7 @@ class LocalFuncs(object):
                 return dict(error=dict(name='EauthAuthenticationError',
                                        message=msg))
 
-            jid = salt.utils.gen_jid()
+            jid = salt.utils.jid.gen_jid()
             fun = load.pop('fun')
             tag = tagify(jid, prefix='wheel')
             data = {'fun': "wheel.{0}".format(fun),
@@ -1212,7 +1251,7 @@ class LocalFuncs(object):
             )
             return dict(error=dict(name=exc.__class__.__name__,
                                    args=exc.args,
-                                   message=exc.message))
+                                   message=str(exc)))
 
     def mk_token(self, load):
         '''
@@ -1268,7 +1307,7 @@ class LocalFuncs(object):
         # check if the cmd is blacklisted
         for module_re in self.opts['client_acl_blacklist'].get('modules', []):
             # if this is a regular command, its a single function
-            if type(load['fun']) == str:
+            if isinstance(load['fun'], str):
                 funs_to_check = [load['fun']]
             # if this a compound function
             else:

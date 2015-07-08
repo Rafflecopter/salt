@@ -4,6 +4,7 @@
 import os
 import yaml
 import shutil
+import time
 
 # Import Salt Testing libs
 from salttesting.helpers import ensure_in_syspath
@@ -11,6 +12,7 @@ ensure_in_syspath('../../')
 
 # Import salt libs
 import integration
+import salt.utils
 
 
 class MatchTest(integration.ShellCase, integration.ShellCaseCommonTestsMixIn):
@@ -40,24 +42,58 @@ class MatchTest(integration.ShellCase, integration.ShellCaseCommonTestsMixIn):
         data = '\n'.join(data)
         self.assertIn('minion', data)
         self.assertNotIn('sub_minion', data)
+        time.sleep(2)
         data = self.run_salt('-C "min* and not G@test_grain:foo" test.ping')
         data = '\n'.join(data)
         self.assertIn('minion', data)
         self.assertNotIn('sub_minion', data)
+        time.sleep(2)
         data = self.run_salt('-C "min* not G@test_grain:foo" test.ping')
         data = '\n'.join(data)
         self.assertIn('minion', data)
         self.assertNotIn('sub_minion', data)
+        time.sleep(2)
         match = 'P@test_grain:^cheese$ and * and G@test_grain:cheese'
         data = self.run_salt('-t 1 -C \'{0}\' test.ping'.format(match))
         data = '\n'.join(data)
         self.assertIn('minion', data)
         self.assertNotIn('sub_minion', data)
+        time.sleep(2)
         match = 'L@sub_minion and E@.*'
         data = self.run_salt('-t 1 -C "{0}" test.ping'.format(match))
         data = '\n'.join(data)
         self.assertIn('sub_minion', data)
         self.assertNotIn('minion', data.replace('sub_minion', 'stub'))
+
+    def test_nodegroup(self):
+        '''
+        test salt nodegroup matcher
+        '''
+        def minion_in_target(minion, lines):
+            return sum([line == '{0}:'.format(minion) for line in lines])
+
+        data = self.run_salt('-N min test.ping')
+        self.assertTrue(minion_in_target('minion', data))
+        self.assertFalse(minion_in_target('sub_minion', data))
+        time.sleep(2)
+        data = self.run_salt('-N sub_min test.ping')
+        self.assertFalse(minion_in_target('minion', data))
+        self.assertTrue(minion_in_target('sub_minion', data))
+        time.sleep(2)
+        data = self.run_salt('-N mins test.ping')
+        self.assertTrue(minion_in_target('minion', data))
+        self.assertTrue(minion_in_target('sub_minion', data))
+        time.sleep(2)
+        data = self.run_salt('-N unknown_nodegroup test.ping')
+        self.assertFalse(minion_in_target('minion', data))
+        self.assertFalse(minion_in_target('sub_minion', data))
+        time.sleep(2)
+        data = self.run_salt('-N redundant_minions test.ping')
+        self.assertTrue(minion_in_target('minion', data))
+        self.assertTrue(minion_in_target('sub_minion', data))
+        time.sleep(2)
+        data = '\n'.join(self.run_salt('-N nodegroup_loop_a test.ping'))
+        self.assertIn('No minions matched', data)
 
     def test_glob(self):
         '''
@@ -185,6 +221,19 @@ class MatchTest(integration.ShellCase, integration.ShellCaseCommonTestsMixIn):
         self.assertIn('minion', data)
         self.assertIn('sub_minion', data)
 
+    def test_repillar(self):
+        '''
+        test salt pillar PCRE matcher
+        '''
+        data = self.run_salt('-J "monty:^(python|hall)$" test.ping')
+        data = '\n'.join(data)
+        self.assertIn('minion', data)
+        self.assertIn('sub_minion', data)
+        data = self.run_salt('--pillar-pcre "knights:^(Robin|Lancelot)$" test.ping')
+        data = '\n'.join(data)
+        self.assertIn('sub_minion', data)
+        self.assertIn('minion', data.replace('sub_minion', 'stub'))
+
     def test_ipcidr(self):
         subnets_data = self.run_salt('--out yaml \'*\' network.subnets')
         yaml_data = yaml.load('\n'.join(subnets_data))
@@ -209,23 +258,23 @@ class MatchTest(integration.ShellCase, integration.ShellCaseCommonTestsMixIn):
         '''
         Test to see if we're supporting --doc
         '''
-        data = self.run_salt(r'-d \* user')
-        self.assertIn('user.add:', data)
+        data = self.run_salt('-d "*" user')
+        self.assertIn("'user.add:'", data)
 
     def test_salt_documentation_arguments_not_assumed(self):
         '''
         Test to see if we're not auto-adding '*' and 'sys.doc' to the call
         '''
         data = self.run_salt('-d -t 20')
-        self.assertIn('user.add:', data)
-        data = self.run_salt('\'*\' -d -t 20')
-        self.assertIn('user.add:', data)
-        data = self.run_salt('\'*\' -d user -t 20')
-        self.assertIn('user.add:', data)
-        data = self.run_salt('\'*\' sys.doc -d user -t 20')
-        self.assertIn('user.add:', data)
-        data = self.run_salt('\'*\' sys.doc user -t 20')
-        self.assertIn('user.add:', data)
+        self.assertIn("'user.add:'", data)
+        data = self.run_salt('"*" -d -t 20')
+        self.assertIn("'user.add:'", data)
+        data = self.run_salt('"*" -d user -t 20')
+        self.assertIn("'user.add:'", data)
+        data = self.run_salt('"*" sys.doc -d user -t 20')
+        self.assertIn("'user.add:'", data)
+        data = self.run_salt('"*" sys.doc user -t 20')
+        self.assertIn("'user.add:'", data)
 
     def test_salt_documentation_too_many_arguments(self):
         '''
@@ -243,13 +292,15 @@ class MatchTest(integration.ShellCase, integration.ShellCaseCommonTestsMixIn):
         os.chdir(config_dir)
 
         config_file_name = 'master'
-        config = yaml.load(
-            open(self.get_config_file_path(config_file_name), 'r').read()
-        )
-        config['log_file'] = 'file:///dev/log/LOG_LOCAL3'
-        open(os.path.join(config_dir, config_file_name), 'w').write(
-            yaml.dump(config, default_flow_style=False)
-        )
+        with salt.utils.fopen(self.get_config_file_path(config_file_name), 'r') as fhr:
+            config = yaml.load(
+                fhr.read()
+            )
+            config['log_file'] = 'file:///dev/log/LOG_LOCAL3'
+            with salt.utils.fopen(os.path.join(config_dir, config_file_name), 'w') as fhw:
+                fhw.write(
+                    yaml.dump(config, default_flow_style=False)
+            )
         ret = self.run_script(
             self._call_binary_,
             '--config-dir {0} minion test.ping'.format(

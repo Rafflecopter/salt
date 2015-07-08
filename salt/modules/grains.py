@@ -5,7 +5,9 @@ Return/control aspects of the grains data
 
 # Import python libs
 from __future__ import print_function
+from __future__ import absolute_import
 import collections
+import copy
 import math
 import operator
 import os
@@ -16,19 +18,15 @@ import logging
 # Import salt libs
 import salt.utils
 import salt.utils.dictupdate
+from salt.defaults import DEFAULT_TARGET_DELIM
 from salt.exceptions import SaltException
+from functools import reduce
+from salt.ext.six.moves import range
 
 __proxyenabled__ = ['*']
 
 # Seed the grains dict so cython will build
 __grains__ = {}
-
-# Change the default outputter to make it more readable
-__outputter__ = {
-    'items': 'grains',
-    'item': 'grains',
-    'setval': 'grains',
-}
 
 # http://stackoverflow.com/a/12414913/127816
 _infinitedict = lambda: collections.defaultdict(_infinitedict)
@@ -61,7 +59,7 @@ _SANITIZERS = {
 }
 
 
-def get(key, default='', delim=':'):
+def get(key, default='', delimiter=DEFAULT_TARGET_DELIM):
     '''
     Attempt to retrieve the named value from grains, if the named value is not
     available return the passed default. The default return is an empty string.
@@ -77,10 +75,10 @@ def get(key, default='', delim=':'):
         pkg:apache
 
 
-    delim
+    delimiter
         Specify an alternate delimiter to use when traversing a nested dict
 
-        .. versionadded:: Helium
+        .. versionadded:: 2014.7.0
 
     CLI Example:
 
@@ -88,7 +86,10 @@ def get(key, default='', delim=':'):
 
         salt '*' grains.get pkg:apache
     '''
-    return salt.utils.traverse_dict_and_list(__grains__, key, default, delim)
+    return salt.utils.traverse_dict_and_list(__grains__,
+                                             key,
+                                             default,
+                                             delimiter)
 
 
 def has_value(key):
@@ -156,11 +157,18 @@ def item(*args, **kwargs):
         salt '*' grains.item host sanitize=True
     '''
     ret = {}
-    for arg in args:
-        try:
-            ret[arg] = __grains__[arg]
-        except KeyError:
-            pass
+    default = kwargs.get('default', '')
+    delimiter = kwargs.get('delimiter', ':')
+
+    try:
+        for arg in args:
+            ret[arg] = salt.utils.traverse_dict_and_list(__grains__,
+                                                        arg,
+                                                        default,
+                                                        delimiter)
+    except KeyError:
+        pass
+
     if salt.utils.is_true(kwargs.get('sanitize')):
         for arg, func in _SANITIZERS.items():
             if arg in ret:
@@ -234,8 +242,9 @@ def setvals(grains, destructive=False):
     except (IOError, OSError):
         msg = 'Unable to write to cache file {0}. Check permissions.'
         log.error(msg.format(fn_))
-    # Sync the grains
-    __salt__['saltutil.sync_grains']()
+    if not __opts__.get('local', False):
+        # Sync the grains
+        __salt__['saltutil.sync_grains']()
     # Return the grains we just set to confirm everything was OK
     return new_grains
 
@@ -256,7 +265,7 @@ def setval(key, val, destructive=False):
     return setvals({key: val}, destructive)
 
 
-def append(key, val, convert=False):
+def append(key, val, convert=False, delimiter=':'):
     '''
     .. versionadded:: 0.17.0
 
@@ -274,20 +283,38 @@ def append(key, val, convert=False):
         If convert is False and the grain contains non-list contents, an error
         is given. Defaults to False.
 
+    :param delimiter: The key can be a nested dict key. Use this parameter to
+        specify the delimiter you use.
+        You can now append values to a list in nested dictionnary grains. If the
+        list doesn't exist at this level, it will be created.
+        .. versionadded:: 2014.7.6
+
     CLI Example:
 
     .. code-block:: bash
 
         salt '*' grains.append key val
     '''
-    grains = get(key, [])
+    grains = get(key, [], delimiter)
     if not isinstance(grains, list) and convert is True:
         grains = [grains]
     if not isinstance(grains, list):
         return 'The key {0} is not a valid list'.format(key)
     if val in grains:
         return 'The val {0} was already in the list {1}'.format(val, key)
-    grains.append(val)
+    if isinstance(val, list):
+        for item in val:
+            grains.append(item)
+    else:
+        grains.append(val)
+
+    while delimiter in key:
+        key, rest = key.rsplit(delimiter, 1)
+        _grain = get(key, _infinitedict(), delimiter)
+        if isinstance(_grain, dict):
+            _grain.update({rest: grains})
+        grains = _grain
+
     return setval(key, grains)
 
 
@@ -318,7 +345,7 @@ def delval(key, destructive=False):
 
     Delete a grain from the grains config file
 
-    :param Destructive: Delete the key, too. Defaults to False.
+    :param destructive: Delete the key, too. Defaults to False.
 
     CLI Example:
 
@@ -343,7 +370,7 @@ def ls():  # pylint: disable=C0103
     return sorted(__grains__)
 
 
-def filter_by(lookup_dict, grain='os_family', merge=None, default='default'):
+def filter_by(lookup_dict, grain='os_family', merge=None, default='default', base=None):
     '''
     .. versionadded:: 0.17.0
 
@@ -359,15 +386,12 @@ def filter_by(lookup_dict, grain='os_family', merge=None, default='default'):
         {% set apache = salt['grains.filter_by']({
             'Debian': {'pkg': 'apache2', 'srv': 'apache2'},
             'RedHat': {'pkg': 'httpd', 'srv': 'httpd'},
-            'default': 'Debian',
-        }) %}
+        }, default='Debian') %}
 
         myapache:
-          pkg:
-            - installed
+          pkg.installed:
             - name: {{ apache.pkg }}
-          service:
-            - running
+          service.running:
             - name: {{ apache.srv }}
 
     Values in the lookup table may be overridden by values in Pillar. An
@@ -398,16 +422,25 @@ def filter_by(lookup_dict, grain='os_family', merge=None, default='default'):
         grains. For example, the value of the "os_family" grain for the current
         system could be used to pull values from the ``lookup_dict``
         dictionary.
-    :param merge: A dictionary to merge with the ``lookup_dict`` before doing
-        the lookup. This allows Pillar to override the values in the
+    :param merge: A dictionary to merge with the results of the grain selection
+        from ``lookup_dict``. This allows Pillar to override the values in the
         ``lookup_dict``. This could be useful, for example, to override the
         values for non-standard package names such as when using a different
         Python version from the default Python version provided by the OS
         (e.g., ``python26-mysql`` instead of ``python-mysql``).
     :param default: default lookup_dict's key used if the grain does not exists
-         or if the grain value has no match on lookup_dict.
+        or if the grain value has no match on lookup_dict.  If unspecified
+        the value is "default".
 
-         .. versionadded:: 2014.1.0
+        .. versionadded:: 2014.1.0
+
+    :param base: A lookup_dict key to use for a base dictionary.  The
+        grain-selected ``lookup_dict`` is merged over this and then finally
+        the ``merge`` dictionary is merged.  This allows common values for
+        each case to be collected in the base and overridden by the grain
+        selection dictionary and the merge dictionary.  Default is unset.
+
+        .. versionadded:: 2015.5.0
 
     CLI Example:
 
@@ -416,7 +449,11 @@ def filter_by(lookup_dict, grain='os_family', merge=None, default='default'):
         salt '*' grains.filter_by '{Debian: Debheads rule, RedHat: I love my hat}'
         # this one will render {D: {E: I, G: H}, J: K}
         salt '*' grains.filter_by '{A: B, C: {D: {E: F,G: H}}}' 'xxx' '{D: {E: I},J: K}' 'C'
+        # next one renders {A: {B: G}, D: J}
+        salt '*' grains.filter_by '{default: {A: {B: C}, D: E}, F: {A: {B: G}}, H: {D: I}}' 'xxx' '{D: J}' 'F' 'default'
+        # next same as above when default='H' instead of 'F' renders {A: {B: C}, D: J}
     '''
+
     ret = lookup_dict.get(
             __grains__.get(
                 grain, default),
@@ -424,22 +461,29 @@ def filter_by(lookup_dict, grain='os_family', merge=None, default='default'):
                 default, None)
             )
 
+    if base and base in lookup_dict:
+        base_values = lookup_dict[base]
+        if ret is None:
+            ret = base_values
+
+        elif isinstance(base_values, collections.Mapping):
+            if not isinstance(ret, collections.Mapping):
+                raise SaltException('filter_by default and look-up values must both be dictionaries.')
+            ret = salt.utils.dictupdate.update(copy.deepcopy(base_values), ret)
+
     if merge:
         if not isinstance(merge, collections.Mapping):
             raise SaltException('filter_by merge argument must be a dictionary.')
 
+        if ret is None:
+            ret = merge
         else:
-
-            if ret is None:
-                ret = merge
-
-            else:
-                salt.utils.dictupdate.update(ret, merge)
+            salt.utils.dictupdate.update(ret, merge)
 
     return ret
 
 
-def _dict_from_path(path, val, delim=':'):
+def _dict_from_path(path, val, delimiter=DEFAULT_TARGET_DELIM):
     '''
     Given a lookup string in the form of 'foo:bar:baz" return a nested
     dictionary of the appropriate depth with the final segment as a value.
@@ -448,7 +492,7 @@ def _dict_from_path(path, val, delim=':'):
     {"foo": {"bar": {"baz": "somevalue"}}
     '''
     nested_dict = _infinitedict()
-    keys = path.rsplit(delim)
+    keys = path.rsplit(delimiter)
     lastplace = reduce(operator.getitem, keys[:-1], nested_dict)
     lastplace[keys[-1]] = val
 
@@ -480,16 +524,26 @@ def get_or_set_hash(name,
     .. code-block:: bash
 
         salt '*' grains.get_or_set_hash 'django:SECRET_KEY' 50
+
+    .. warning::
+
+        This function could return strings which may contain characters which are reserved
+        as directives by the YAML parser, such as strings beginning with `%`. To avoid
+        issues when using the output of this function in an SLS file containing YAML+Jinja,
+        surround the call with single quotes.
     '''
     ret = get(name, None)
 
     if ret is None:
-        val = ''.join([random.choice(chars) for _ in range(length)])
+        val = ''.join([random.SystemRandom().choice(chars) for _ in range(length)])
 
         if ':' in name:
-            name, rest = name.split(':', 1)
+            root, rest = name.split(':', 1)
+            curr = get(root, _infinitedict())
             val = _dict_from_path(rest, val)
-
-        setval(name, val)
+            curr.update(val)
+            setval(root, curr)
+        else:
+            setval(name, val)
 
     return get(name)
