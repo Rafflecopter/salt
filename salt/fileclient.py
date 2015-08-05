@@ -560,8 +560,8 @@ class Client(object):
                                     verify_ssl=self.opts.get('s3.verify_ssl',
                                                               True))
                 return dest
-            except Exception:
-                raise MinionError('Could not fetch from {0}'.format(url))
+            except Exception as e:
+                raise MinionError('Could not fetch from {0}: {1}'.format(url, str(e)))
 
         if url_data.scheme == 'swift':
             try:
